@@ -267,27 +267,31 @@ docker compose up -d --build
 - 数据卷：`apiext-data` → 容器内 `/app/App_Data`  
 - 可通过环境变量覆盖密码、Webhook Secret、默认 ZLM 地址等（见 `docker-compose.yml`）
 
-### 发布镜像到 GHCR（手动）
+### 发布镜像到 GHCR（手动 · Buildx 多平台）
 
 仓库已配置 GitHub Actions：`.github/workflows/docker-ghcr.yml`（仅 `workflow_dispatch` 手动触发）。
 
+使用 **Docker Buildx** + QEMU 构建并推送 **多架构 manifest**（默认 `linux/amd64,linux/arm64`）。
+
 1. 推送代码到 GitHub 后，打开 **Actions → Docker GHCR → Run workflow**  
-2. 可选：是否打 `latest`、构建平台（默认 `linux/amd64`）  
+2. 可选：是否打 `latest`；`platforms` 默认已是双架构，一般不用改  
 3. **版本号自动生成**：`yyMMdd-HHmm`（Asia/Shanghai），无需手动输入  
 4. 运行完成后镜像在：
 
 ```text
-ghcr.io/<owner>/<repo>:260712-1530    # 示例：2026-07-12 15:30
+ghcr.io/<owner>/<repo>:260712-1530    # 示例：2026-07-12 15:30（含 amd64 + arm64）
 ghcr.io/<owner>/<repo>:latest         # 可选
 ghcr.io/<owner>/<repo>:sha-<short>
 ```
 
-拉取示例（私有包需先登录）：
+拉取示例（私有包需先登录；Docker 会按本机架构自动选择）：
 
 ```bash
 echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin
 docker pull ghcr.io/<owner>/<repo>:260712-1530
 docker pull ghcr.io/<owner>/<repo>:latest
+# 查看多平台 manifest：
+docker buildx imagetools inspect ghcr.io/<owner>/<repo>:latest
 ```
 
 包可见性：GitHub → 仓库 / 组织 **Packages** → 对应包 → Package settings → Change visibility。

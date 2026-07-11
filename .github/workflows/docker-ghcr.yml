@@ -1,10 +1,10 @@
-# Manual publish of Apiext.MediaKit image to GitHub Container Registry (GHCR).
+# Manual publish of Apiext.MediaKit multi-arch image to GHCR via Docker Buildx.
 # Actions → Docker GHCR → Run workflow
 #
 # Image: ghcr.io/<owner>/<repo>:<yyMMdd-HHmm>
-# Also tags: latest (optional), sha-<short>
+# Platforms (default): linux/amd64,linux/arm64
 
-name: Docker GHCR
+name: Docker Release
 
 on:
   workflow_dispatch:
@@ -15,10 +15,10 @@ on:
         type: boolean
         default: true
       platforms:
-        description: "Build platforms (comma-separated)"
+        description: "Buildx platforms (comma-separated)"
         required: false
         type: string
-        default: "linux/amd64"
+        default: "linux/amd64,linux/arm64"
 
 env:
   REGISTRY: ghcr.io
@@ -32,7 +32,7 @@ permissions:
 
 jobs:
   build-and-push:
-    name: Build & push
+    name: Buildx multi-arch & push
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -47,9 +47,14 @@ jobs:
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
+        with:
+          platforms: all
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+          platforms: ${{ inputs.platforms }}
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -74,7 +79,7 @@ jobs:
             type=raw,value=latest,enable=${{ inputs.push_latest }}
             type=sha,prefix=sha-,format=short
 
-      - name: Build and push
+      - name: Build and push (Buildx multi-platform)
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -83,22 +88,25 @@ jobs:
           platforms: ${{ inputs.platforms }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          sbom: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          provenance: false
 
       - name: Summary
         run: |
           {
-            echo "## GHCR image published"
+            echo "## GHCR multi-arch image published (Buildx)"
             echo ""
             echo "**Version:** \`${{ steps.version.outputs.tag }}\`"
+            echo ""
+            echo "**Platforms:** \`${{ inputs.platforms }}\`"
             echo ""
             echo '```'
             echo "${{ steps.meta.outputs.tags }}"
             echo '```'
             echo ""
-            echo "Pull example:"
+            echo "Pull example (Docker pulls the matching arch automatically):"
             echo '```'
             echo "docker pull ${{ steps.image.outputs.name }}:${{ steps.version.outputs.tag }}"
             echo "docker pull ${{ steps.image.outputs.name }}:latest"
