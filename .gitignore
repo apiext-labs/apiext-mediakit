@@ -1,0 +1,93 @@
+## Build
+**/bin/
+**/obj/
+**/out/
+**/publish/
+**/artifacts/
+*.dll
+*.exe
+*.pdb
+*.cache
+*.log
+
+## .NET / NuGet
+*.nupkg
+*.snupkg
+**/packages/
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## Visual Studio / Rider / VS Code
+.vs/
+*.user
+*.userosscache
+*.suo
+*.userprefs
+*.rsuser
+*.sln.docstates
+.idea/
+*.DotSettings.user
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+## OS
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+## App runtime data (SQLite etc.)
+**/App_Data/
+*.db
+*.db-shm
+*.db-wal
+
+## Logs & temp
+*.log
+logs/
+Log/
+tmp/
+temp/
+*.tmp
+*.temp
+server.*.log
+
+## Test / coverage
+TestResults/
+[Bb]enchmarkDotNet.Artifacts/
+coverage*.json
+coverage*.xml
+*.coverage
+*.coveragexml
+
+## Secrets / local overrides (keep examples tracked if any)
+appsettings.*.local.json
+**/secrets.json
+.env
+.env.*
+!.env.example
+
+## Docker local volumes / compose overrides
+docker-compose.override.yml
+
+## Node (if any frontend tooling appears later)
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+## Publish / installers
+*.msi
+*.msix
+*.appx
+*.appxbundle
+*.appinstaller
+
+## Others
+*.swp
+*~
+.claude/
+.agents/

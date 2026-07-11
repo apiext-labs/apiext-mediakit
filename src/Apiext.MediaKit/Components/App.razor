@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    @* Client project StaticWebAssetProjectMode=Default → assets are at site root, not /_content/{assembly}/ *@
+    <link href="_content/AntDesign/css/ant-design-blazor.css" rel="stylesheet" />
+    <link href="_content/AntDesign.ProLayout/css/ant-design-pro-layout-blazor.css" rel="stylesheet" />
+    <link href="css/site.css" rel="stylesheet" />
+    <link href="app.css" rel="stylesheet" />
+    <link rel="icon" type="image/x-icon" href="favicon.ico" />
+    <HeadOutlet @rendermode="InteractiveAuto" />
+</head>
+
+<body>
+    <Routes @rendermode="InteractiveAuto" />
+
+    <script src="_content/AntDesign/js/ant-design-blazor.js"></script>
+    <script src="js/player.js"></script>
+    <script src="js/whip.js"></script>
+    <script src="_framework/blazor.web.js"></script>
+</body>
+
+</html>

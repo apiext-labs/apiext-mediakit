@@ -1,0 +1,23 @@
+[
+  { "path": "/", "name": "运行概览", "key": "dashboard", "icon": "dashboard" },
+  { "path": "/streams", "name": "在线流", "key": "streams", "icon": "play-circle" },
+  { "path": "/pull-proxies", "name": "拉流代理", "key": "pull-proxies", "icon": "cloud-download" },
+  { "path": "/push-proxies", "name": "推流代理", "key": "push-proxies", "icon": "cloud-upload" },
+  { "path": "/whip", "name": "在线推流", "key": "whip", "icon": "video-camera" },
+  { "path": "/network", "name": "网络连接", "key": "network", "icon": "api" },
+  { "path": "/recordings", "name": "录制管理", "key": "recordings", "icon": "video-camera" },
+  {
+    "path": "/system",
+    "name": "系统管理",
+    "key": "system",
+    "icon": "setting",
+    "children": [
+      { "path": "/servers", "name": "媒体实例", "key": "system.servers" },
+      { "path": "/protocol-presets", "name": "转协议预设", "key": "system.protocol-presets" },
+      { "path": "/configuration", "name": "ZLM 配置", "key": "system.configuration" },
+      { "path": "/webhooks", "name": "Webhook 事件", "key": "system.webhooks" },
+      { "path": "/plugins", "name": "插件", "key": "system.plugins" },
+      { "path": "/security", "name": "安全与鉴权", "key": "system.security" }
+    ]
+  }
+]

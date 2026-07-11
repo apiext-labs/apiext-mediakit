@@ -1,0 +1,106 @@
+# Manual publish of Apiext.MediaKit image to GitHub Container Registry (GHCR).
+# Actions → Docker GHCR → Run workflow
+#
+# Image: ghcr.io/<owner>/<repo>:<yyMMdd-HHmm>
+# Also tags: latest (optional), sha-<short>
+
+name: Docker GHCR
+
+on:
+  workflow_dispatch:
+    inputs:
+      push_latest:
+        description: "Also tag as latest"
+        required: false
+        type: boolean
+        default: true
+      platforms:
+        description: "Build platforms (comma-separated)"
+        required: false
+        type: string
+        default: "linux/amd64"
+
+env:
+  REGISTRY: ghcr.io
+  # lowercase required by GHCR
+  IMAGE_NAME: ${{ github.repository }}
+  TZ: Asia/Shanghai
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    name: Build & push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Version tag (yyMMdd-HHmm, Asia/Shanghai)
+        id: version
+        run: |
+          TAG="$(TZ=Asia/Shanghai date +%y%m%d-%H%M)"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Version tag: ${TAG}"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Normalize image name (lowercase)
+        id: image
+        run: |
+          name="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          echo "name=${name,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=raw,value=${{ steps.version.outputs.tag }}
+            type=raw,value=latest,enable=${{ inputs.push_latest }}
+            type=sha,prefix=sha-,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: ${{ inputs.platforms }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Summary
+        run: |
+          {
+            echo "## GHCR image published"
+            echo ""
+            echo "**Version:** \`${{ steps.version.outputs.tag }}\`"
+            echo ""
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo ""
+            echo "Pull example:"
+            echo '```'
+            echo "docker pull ${{ steps.image.outputs.name }}:${{ steps.version.outputs.tag }}"
+            echo "docker pull ${{ steps.image.outputs.name }}:latest"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

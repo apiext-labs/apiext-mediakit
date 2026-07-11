@@ -1,0 +1,54 @@
+@namespace Apiext.MediaKit.Layouts
+@inherits LayoutComponentBase
+
+<AntDesign.ProLayout.BasicLayout
+    Logo="@("assets/logo.svg")"
+    MenuData="_menuData"
+    MenuAccordion
+    @bind-Collapsed="collapsed">
+    <HeaderContentRender>
+        <Space Size="@("24")">
+            <SpaceItem>
+                <Icon Class="action" Type="@(collapsed ? "menu-unfold" : "menu-fold")" OnClick="Toggle" />
+            </SpaceItem>
+            <SpaceItem>
+                <Icon Class="action" Type="reload" Theme="@IconThemeType.Outline" OnClick="Reload" />
+            </SpaceItem>
+        </Space>
+    </HeaderContentRender>
+    <RightContentRender>
+        <Apiext.MediaKit.Components.RightContent />
+    </RightContentRender>
+    <ChildContent>
+        @* AuthorizeRouteView feeds page content via LayoutComponentBase.Body.
+           Empty <ReuseTabs/> alone does not render the page under AuthorizeRouteView. *@
+        @Body
+    </ChildContent>
+    <FooterRender>
+        <FooterView Copyright="Apiext.MediaKit · ZLMediaKit management console" Links="Links"></FooterView>
+    </FooterRender>
+</AntDesign.ProLayout.BasicLayout>
+
+@code {
+    bool collapsed;
+
+    public LinkItem[] Links =
+    [
+        new LinkItem
+        {
+            Key = "ZLMediaKit",
+            Title = "ZLMediaKit",
+            Href = "https://github.com/ZLMediaKit/ZLMediaKit",
+            BlankTarget = true,
+        },
+        new LinkItem
+        {
+            Key = "ZLMediaKit Docs",
+            Title = "ZLMediaKit 文档",
+            Href = "https://docs.zlmediakit.com",
+            BlankTarget = true,
+        },
+    ];
+
+    void Toggle() => collapsed = !collapsed;
+}

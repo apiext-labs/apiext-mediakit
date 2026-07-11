@@ -1,0 +1,60 @@
+# Apiext.MediaKit (+ optional ZLMediaKit)
+# Usage:
+#   docker compose up -d --build
+# Admin UI: http://localhost:5082/user/login  (admin / change-me — change in production)
+
+services:
+  apiext-mediakit:
+    build: .
+    container_name: apiext-mediakit
+    ports:
+      - "5082:5082"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:5082
+      ConnectionStrings__Default: Data Source=/app/App_Data/apiext-mediakit.db
+      Authentication__UserName: admin
+      Authentication__Password: change-me
+      MediaKit__DefaultServer__Name: Local ZLMediaKit
+      MediaKit__DefaultServer__BaseUrl: http://zlmediakit:80
+      MediaKit__DefaultServer__Secret: ${ZLM_SECRET:-}
+      MediaKit__WebhookSecret: ${WEBHOOK_SECRET:-change-webhook-secret}
+      MediaKit__StreamAuth__SigningKey: ${STREAM_AUTH_KEY:-change-stream-auth-key}
+      MediaKit__StreamAuth__AllowEmptyTokenInDevelopment: "false"
+      MediaKit__Webhook__RateLimitPerMinute: "120"
+      # Example allow-list (uncomment / set to your ZLM host IPs):
+      # MediaKit__Webhook__AllowedIps__0: 172.16.0.0/12
+      MediaKit__PlayUrl__PublicHost: ${PLAY_PUBLIC_HOST:-localhost}
+      MediaKit__PlayUrl__HttpPort: ${PLAY_HTTP_PORT:-80}
+      MediaKit__PlayUrl__RtspPort: "554"
+      MediaKit__PlayUrl__RtmpPort: "1935"
+      MediaKit__Health__ProbeDefaultZlm: "true"
+    volumes:
+      - apiext-data:/app/App_Data
+    depends_on:
+      - zlmediakit
+    restart: unless-stopped
+    # Probe after start: curl http://localhost:5082/health
+
+  # Optional local ZLM — replace image/tag with your preferred build.
+  zlmediakit:
+    image: zlmediakit/zlmediakit:master
+    container_name: zlmediakit
+    ports:
+      - "80:80"
+      - "1935:1935"
+      - "554:554"
+      - "8000:8000/udp"
+      - "9000:9000/udp"
+      - "10000:10000"
+      - "10000:10000/udp"
+    environment:
+      # Some images read secret from env or mounted config; adjust to your image docs.
+      TZ: Asia/Shanghai
+    volumes:
+      - zlm-data:/opt/media
+    restart: unless-stopped
+
+volumes:
+  apiext-data:
+  zlm-data:

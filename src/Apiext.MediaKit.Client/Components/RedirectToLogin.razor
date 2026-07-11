@@ -1,0 +1,27 @@
+@inject NavigationManager Navigation
+
+@code {
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (!firstRender) return;
+
+        var uri = Navigation.ToAbsoluteUri(Navigation.Uri);
+        var path = uri.AbsolutePath;
+
+        // Never redirect away from / back onto itself in a loop.
+        if (path.StartsWith("/user/login", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        // Don't nest login pages as returnUrl.
+        var returnPath = uri.PathAndQuery;
+        if (string.IsNullOrWhiteSpace(returnPath)
+            || returnPath.StartsWith("/user/login", StringComparison.OrdinalIgnoreCase)
+            || returnPath.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+        {
+            Navigation.NavigateTo("/user/login", forceLoad: true);
+            return;
+        }
+
+        Navigation.NavigateTo($"/user/login?returnUrl={Uri.EscapeDataString(returnPath)}", forceLoad: true);
+    }
+}

@@ -1,0 +1,27 @@
+@* Host already registers cascading auth state. *@
+<Router AppAssembly="typeof(Program).Assembly">
+    <Found Context="routeData">
+        <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(Apiext.MediaKit.Layouts.BasicLayout)">
+            <Authorizing>
+                <div style="padding:48px;text-align:center;color:rgba(0,0,0,.45)">正在验证登录状态…</div>
+            </Authorizing>
+            <NotAuthorized>
+                <RedirectToLogin />
+            </NotAuthorized>
+        </AuthorizeRouteView>
+        <FocusOnNavigate RouteData="routeData" Selector="h1" />
+    </Found>
+    <NotFound>
+        <LayoutView Layout="typeof(Apiext.MediaKit.Layouts.UserLayout)">
+            <div class="auth-panel" style="text-align:center">
+                <header>
+                    <h1>页面不存在</h1>
+                    <p>请从菜单进入可用功能</p>
+                </header>
+                <a href="/" class="auth-submit" style="display:inline-flex;align-items:center;justify-content:center;text-decoration:none">返回首页</a>
+            </div>
+        </LayoutView>
+    </NotFound>
+</Router>
+
+<AntContainer />

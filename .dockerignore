@@ -1,0 +1,9 @@
+**/.git
+**/.vs
+**/bin
+**/obj
+**/App_Data
+**/*.user
+**/*.db
+**/node_modules
+README.md

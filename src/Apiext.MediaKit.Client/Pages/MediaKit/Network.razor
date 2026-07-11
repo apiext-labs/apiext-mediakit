@@ -1,0 +1,64 @@
+@page "/network"
+@namespace Apiext.MediaKit.Pages.MediaKit
+@inject MediaKitApiClient Api
+@inject MediaServerContext ServerContext
+@inject MessageService Message
+
+<PageContainer Title="网络连接">
+    <ExtraContent>
+        <ServerSelector OnServerChanged="LoadAsync">
+            <Button Icon="reload" Loading="_loading" OnClick="LoadAsync">刷新</Button>
+        </ServerSelector>
+    </ExtraContent>
+    <Content>查看 ZLMediaKit 当前 Session，可按连接 ID 主动断开播放器或推流客户端。</Content>
+    <ChildContent>
+        <Card BodyStyle="padding:0">
+            <Table DataSource="@_sessions" Loading="_loading" PageSize="20" ScrollX="1100" TItem="NetworkSessionDto">
+                <AntDesign.Column Title="会话 ID" @bind-Field="@context.Id" Width="240" />
+                <AntDesign.Column Title="类型" @bind-Field="@context.TypeId" Width="160" />
+                <AntDesign.Column Title="标识" @bind-Field="@context.Identifier" Width="180" />
+                <AntDesign.Column Title="本地 IP" @bind-Field="@context.LocalIp" Width="140" />
+                <AntDesign.Column Title="本地端口" @bind-Field="@context.LocalPort" Width="100" />
+                <AntDesign.Column Title="客户端 IP" @bind-Field="@context.PeerIp" Width="140" />
+                <AntDesign.Column Title="客户端端口" @bind-Field="@context.PeerPort" Width="110" />
+                <ActionColumn Title="操作" Width="100">
+                    <Button Type="@ButtonType.Link" Danger OnClick="@(() => KickAsync(context.Id))">断开</Button>
+                </ActionColumn>
+            </Table>
+        </Card>
+    </ChildContent>
+</PageContainer>
+
+@code {
+    private List<NetworkSessionDto> _sessions = [];
+    private bool _loading;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ServerContext.EnsureLoadedAsync();
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            await ServerContext.EnsureLoadedAsync();
+            _sessions = await Api.GetSessionsAsync(ServerContext.CurrentServerId);
+        }
+        catch (Exception ex) { Message.Error(ex.Message); }
+        finally { _loading = false; }
+    }
+
+    private async Task KickAsync(string id)
+    {
+        try
+        {
+            await Api.KickSessionAsync(ServerContext.CurrentServerId, id);
+            Message.Success("连接已断开");
+            await LoadAsync();
+        }
+        catch (Exception ex) { Message.Error(ex.Message); }
+    }
+}

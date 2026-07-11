@@ -1,0 +1,11 @@
+@namespace Apiext.MediaKit.Components
+@inherits AntDomComponentBase
+
+<Space Class="right" Size="@("20")">
+    <SpaceItem>
+        <AvatarDropdown Name="@_currentUser.Name"
+                        Avatar="@_currentUser.Avatar"
+                        MenuItems="@AvatarMenuItems"
+                        OnItemSelected="HandleSelectUser" />
+    </SpaceItem>
+</Space>

@@ -1,0 +1,113 @@
+@page "/security"
+@namespace Apiext.MediaKit.Pages.MediaKit
+@inject MediaKitApiClient Api
+@inject MessageService Message
+
+<PageContainer Title="安全与鉴权">
+    <ExtraContent>
+        <Button Icon="reload" Loading="_loading" OnClick="LoadAsync">刷新状态</Button>
+    </ExtraContent>
+    <ChildContent>
+        @if (_status is not null)
+        {
+            <Row Gutter="16">
+                <AntDesign.Col Xs="24" Md="12">
+                    <Card Title="安全体检" Class="metric-card">
+                        <Descriptions Column="1" Bordered Size="DescriptionsSize.Small">
+                            <DescriptionsItem Title="环境">@_status.EnvironmentName</DescriptionsItem>
+                            <DescriptionsItem Title="管理员弱口令">
+                                <Badge Status="@(_status.WeakAdminPassword ? BadgeStatus.Error : BadgeStatus.Success)"
+                                       Text="@(_status.WeakAdminPassword ? "是 — 请修改 Authentication:Password" : "否")" />
+                            </DescriptionsItem>
+                            <DescriptionsItem Title="Webhook Secret">
+                                <Badge Status="@(_status.WebhookSecretConfigured ? BadgeStatus.Success : BadgeStatus.Warning)"
+                                       Text="@(_status.WebhookSecretConfigured ? "已配置" : "默认/未配置")" />
+                            </DescriptionsItem>
+                            <DescriptionsItem Title="流 Token 鉴权">
+                                @(_status.StreamAuthEnabled ? "已启用" : "关闭")
+                                @if (_status.StreamAuthKeyIsDefault)
+                                {
+                                    <Tag Color="@("orange")" Style="margin-left:8px">SigningKey 默认</Tag>
+                                }
+                            </DescriptionsItem>
+                        </Descriptions>
+                    </Card>
+                </AntDesign.Col>
+                <AntDesign.Col Xs="24" Md="12">
+                    <Card Title="Webhook 接入提示">
+                        <p>ZLM 回调示例：</p>
+                        <p><Text Code>@_status.WebhookUrlHint</Text></p>
+                        <p style="color:rgba(0,0,0,.45)">也可使用请求头 <Text Code>X-MediaKit-Webhook-Secret</Text>。</p>
+                    </Card>
+                </AntDesign.Col>
+            </Row>
+        }
+
+        <Card Title="签发播放/推流 Token" Style="margin-top:16px">
+            <div class="form-grid">
+                <div><label class="field-label">应用 app</label><Input @bind-Value="_app" /></div>
+                <div><label class="field-label">流 stream</label><Input @bind-Value="_stream" /></div>
+                <div>
+                    <label class="field-label">用途</label>
+                    <RadioGroup @bind-Value="_purpose">
+                        <Radio Value="@("play")">播放 play</Radio>
+                        <Radio Value="@("publish")">推流 publish</Radio>
+                    </RadioGroup>
+                </div>
+                <div>
+                    <label class="field-label">有效期（分钟）</label>
+                    <AntDesign.InputNumber @bind-Value="_ttl" Min="1" Max="1440" Style="width:100%" />
+                </div>
+                <div class="wide">
+                    <Button Type="@ButtonType.Primary" Icon="key" Loading="_issuing" OnClick="IssueAsync">签发 Token</Button>
+                </div>
+            </div>
+
+            @if (_token is not null)
+            {
+                <Divider />
+                <Descriptions Column="1" Bordered Size="DescriptionsSize.Small">
+                    <DescriptionsItem Title="Token"><Text Code Copyable>@_token.Token</Text></DescriptionsItem>
+                    <DescriptionsItem Title="过期(UTC unix)">@_token.ExpiresAtUnix</DescriptionsItem>
+                    <DescriptionsItem Title="查询串"><Text Code Copyable>@_token.QueryPrefix</Text></DescriptionsItem>
+                </Descriptions>
+                <Alert Type="AlertType.Info" ShowIcon="true" Style="margin-top:12px"
+                       Message="用法"
+                       Description="将 token 附到播放/推流 URL，例如 flv?token=... 。ZLM 在 on_play / on_publish hook 中把参数回传后，本平台会校验签名与过期时间。" />
+            }
+        </Card>
+    </ChildContent>
+</PageContainer>
+
+@code {
+    private SecurityStatusDto? _status;
+    private StreamTokenDto? _token;
+    private bool _loading;
+    private bool _issuing;
+    private string _app = "live";
+    private string _stream = "test";
+    private string _purpose = "play";
+    private int _ttl = 60;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try { _status = await Api.GetSecurityStatusAsync(); }
+        catch (Exception ex) { Message.Error(ex.Message); }
+        finally { _loading = false; }
+    }
+
+    private async Task IssueAsync()
+    {
+        _issuing = true;
+        try
+        {
+            _token = await Api.IssueStreamTokenAsync(new IssueStreamTokenRequest(_app, _stream, _purpose, _ttl));
+            Message.Success("Token 已签发");
+        }
+        catch (Exception ex) { Message.Error(ex.Message); }
+        finally { _issuing = false; }
+    }
+}

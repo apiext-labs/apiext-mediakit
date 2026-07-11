@@ -1,0 +1,142 @@
+@page "/"
+@namespace Apiext.MediaKit.Pages.MediaKit
+@inject MediaKitApiClient Api
+@inject MediaServerContext ServerContext
+@implements IDisposable
+
+<PageContainer Title="运行概览">
+    <ExtraContent>
+        <ServerSelector OnServerChanged="LoadAsync">
+            <Button Icon="reload" Loading="_loading" OnClick="LoadAsync">刷新</Button>
+            <Checkbox @bind-Checked="_autoRefresh">自动刷新</Checkbox>
+        </ServerSelector>
+    </ExtraContent>
+    <ChildContent>
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <Alert Type="AlertType.Error" ShowIcon="true" Message="加载失败" Description="@_error" Style="margin-bottom:16px" />
+        }
+        @if (_dashboard is { ServerReachable: false })
+        {
+            <Alert Type="AlertType.Warning" ShowIcon="true" Message="ZLMediaKit 当前不可达" Description="@_dashboard.Error" Style="margin-bottom:16px" />
+        }
+        <Row Gutter="16">
+            <AntDesign.Col Xs="24" Sm="12" Xl="6">
+                <Card Class="metric-card"><Statistic Title="在线流" Value="@(_dashboard?.OnlineStreams ?? 0)" Prefix="play-circle" /></Card>
+            </AntDesign.Col>
+            <AntDesign.Col Xs="24" Sm="12" Xl="6">
+                <Card Class="metric-card"><Statistic Title="在线观看" Value="@(_dashboard?.TotalReaders ?? 0)" Prefix="team" /></Card>
+            </AntDesign.Col>
+            <AntDesign.Col Xs="24" Sm="12" Xl="6">
+                <Card Class="metric-card"><Statistic Title="活动拉流代理" Value="@(_dashboard?.PullProxies ?? 0)" Prefix="cloud-download" /></Card>
+            </AntDesign.Col>
+            <AntDesign.Col Xs="24" Sm="12" Xl="6">
+                <Card Class="metric-card"><Statistic Title="TCP 会话" Value="@(_dashboard?.TcpSessions ?? 0)" Prefix="swap" /></Card>
+            </AntDesign.Col>
+        </Row>
+
+        <Row Gutter="16" Style="margin-top:16px">
+            <AntDesign.Col Xs="24" Lg="12">
+                <Card Title="实例状态">
+                    <Descriptions Column="1" Bordered Size="DescriptionsSize.Small">
+                        <DescriptionsItem Title="当前实例">@(_dashboard?.ServerName is { Length: > 0 } n ? n : ServerContext.CurrentServer?.Name ?? "-")</DescriptionsItem>
+                        <DescriptionsItem Title="连接状态">
+                            <Badge Status="@(_dashboard?.ServerReachable == true ? BadgeStatus.Success : BadgeStatus.Error)"
+                                   Text="@(_dashboard?.ServerReachable == true ? "正常" : "异常")" />
+                        </DescriptionsItem>
+                        <DescriptionsItem Title="MediaSource">@(_dashboard?.MediaSources ?? 0)</DescriptionsItem>
+                        <DescriptionsItem Title="最近刷新">@_lastRefreshText</DescriptionsItem>
+                    </Descriptions>
+                </Card>
+            </AntDesign.Col>
+            <AntDesign.Col Xs="24" Lg="12">
+                <Card Title="管理端主机">
+                    @if (_host is null)
+                    {
+                        <span style="color:rgba(0,0,0,.45)">暂无主机采样</span>
+                    }
+                    else
+                    {
+                        <Descriptions Column="1" Bordered Size="DescriptionsSize.Small">
+                            <DescriptionsItem Title="主机">@_host.MachineName</DescriptionsItem>
+                            <DescriptionsItem Title="CPU（本进程估算）">@_host.ProcessCpuPercent %</DescriptionsItem>
+                            <DescriptionsItem Title="工作集">@FormatBytes(_host.WorkingSetBytes)</DescriptionsItem>
+                            <DescriptionsItem Title="托管内存">@FormatBytes(_host.ManagedMemoryBytes)</DescriptionsItem>
+                            <DescriptionsItem Title="运行时长">@_host.UptimeSeconds s</DescriptionsItem>
+                        </Descriptions>
+                    }
+                </Card>
+            </AntDesign.Col>
+        </Row>
+    </ChildContent>
+</PageContainer>
+
+@code {
+    private DashboardDto? _dashboard;
+    private HostStatsDto? _host;
+    private bool _loading;
+    private bool _autoRefresh = true;
+    private string? _error;
+    private string _lastRefreshText = "-";
+    private PeriodicTimer? _timer;
+    private CancellationTokenSource? _cts;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ServerContext.EnsureLoadedAsync();
+        await LoadAsync();
+        _cts = new CancellationTokenSource();
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(8));
+        _ = AutoRefreshLoopAsync(_cts.Token);
+    }
+
+    private async Task AutoRefreshLoopAsync(CancellationToken token)
+    {
+        try
+        {
+            while (_timer is not null && await _timer.WaitForNextTickAsync(token))
+            {
+                if (!_autoRefresh) continue;
+                await InvokeAsync(LoadAsync);
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            await ServerContext.EnsureLoadedAsync();
+            _dashboard = await Api.GetDashboardAsync(ServerContext.CurrentServerId);
+            try { _host = await Api.GetHostStatsAsync(); } catch { /* non-fatal */ }
+            _lastRefreshText = DateTime.Now.ToString("HH:mm:ss");
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        double v = bytes;
+        var i = 0;
+        while (v >= 1024 && i < units.Length - 1) { v /= 1024; i++; }
+        return $"{v:0.##} {units[i]}";
+    }
+
+    public void Dispose()
+    {
+        _cts?.Cancel();
+        _timer?.Dispose();
+        _cts?.Dispose();
+    }
+}

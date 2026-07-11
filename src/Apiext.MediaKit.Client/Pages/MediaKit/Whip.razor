@@ -1,0 +1,166 @@
+@page "/whip"
+@namespace Apiext.MediaKit.Pages.MediaKit
+@inject MediaKitApiClient Api
+@inject MediaServerContext ServerContext
+@inject MessageService Message
+@inject IJSRuntime Js
+
+<PageContainer Title="在线推流 (WHIP)">
+    <ExtraContent>
+        <ServerSelector OnServerChanged="RefreshWhipUrlAsync" />
+    </ExtraContent>
+    <ChildContent>
+        <Row Gutter="16">
+            <AntDesign.Col Xs="24" Lg="12">
+                <Card Title="本地预览">
+                    <video @ref="_videoRef" class="stream-video" autoplay playsinline muted></video>
+                </Card>
+            </AntDesign.Col>
+            <AntDesign.Col Xs="24" Lg="12">
+                <Card Title="推流设置">
+                    <div class="form-grid">
+                        <div><label class="field-label">应用</label><Input @bind-Value="_app" @bind-Value:after="RefreshWhipUrlAsync" /></div>
+                        <div><label class="field-label">流 ID</label><Input @bind-Value="_stream" @bind-Value:after="RefreshWhipUrlAsync" /></div>
+                        <div class="wide">
+                            <label class="field-label">WHIP 地址（由当前实例生成，含 secret）</label>
+                            <Input @bind-Value="_whipUrl" />
+                        </div>
+                        <div>
+                            <label class="field-label">摄像头</label>
+                            <select class="server-select" @bind="_videoDeviceId">
+                                <option value="">默认摄像头</option>
+                                @foreach (var d in _videoDevices)
+                                {
+                                    <option value="@d.DeviceId">@d.Label</option>
+                                }
+                            </select>
+                        </div>
+                        <div>
+                            <label class="field-label">麦克风</label>
+                            <select class="server-select" @bind="_audioDeviceId">
+                                <option value="">默认麦克风</option>
+                                @foreach (var d in _audioDevices)
+                                {
+                                    <option value="@d.DeviceId">@d.Label</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="wide">
+                            <Space>
+                                <SpaceItem><Button OnClick="LoadDevicesAsync" Loading="_loadingDevices">枚举设备</Button></SpaceItem>
+                                <SpaceItem><Button Type="@ButtonType.Primary" Icon="play-circle" Loading="_starting" Disabled="_streaming" OnClick="StartAsync">开始推流</Button></SpaceItem>
+                                <SpaceItem><Button Danger Icon="stop" Disabled="@(!_streaming)" OnClick="StopAsync">停止推流</Button></SpaceItem>
+                            </Space>
+                        </div>
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(_status))
+                    {
+                        <Alert Type="@(_streaming ? AlertType.Success : AlertType.Info)" ShowIcon="true" Message="@_status" Style="margin-top:16px" />
+                    }
+                    <Alert Type="AlertType.Warning" ShowIcon="true" Style="margin-top:16px"
+                           Message="需浏览器允许摄像头/麦克风，且 ZLM 已开启 WebRTC/WHIP（/index/api/whip）。"
+                           Description="WHIP 请求从浏览器直连 ZLM BaseUrl，请保证页面可访问该地址；跨域时需 ZLM/反向代理允许 CORS。" />
+                </Card>
+            </AntDesign.Col>
+        </Row>
+    </ChildContent>
+</PageContainer>
+
+@code {
+    private ElementReference _videoRef;
+    private string _app = "live";
+    private string _stream = "browser";
+    private string _whipUrl = string.Empty;
+    private string _videoDeviceId = string.Empty;
+    private string _audioDeviceId = string.Empty;
+    private string _status = string.Empty;
+    private bool _streaming;
+    private bool _starting;
+    private bool _loadingDevices;
+    private List<DeviceOption> _videoDevices = [];
+    private List<DeviceOption> _audioDevices = [];
+
+    private sealed class DeviceOption
+    {
+        public string DeviceId { get; set; } = string.Empty;
+        public string Label { get; set; } = string.Empty;
+        public string Kind { get; set; } = string.Empty;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ServerContext.EnsureLoadedAsync();
+        await RefreshWhipUrlAsync();
+    }
+
+    private async Task RefreshWhipUrlAsync()
+    {
+        try
+        {
+            await ServerContext.EnsureLoadedAsync();
+            if (ServerContext.CurrentServerId is null || string.IsNullOrWhiteSpace(_app) || string.IsNullOrWhiteSpace(_stream))
+            {
+                _whipUrl = string.Empty;
+                return;
+            }
+            var info = await Api.GetWhipInfoAsync(ServerContext.CurrentServerId, _app, _stream);
+            _whipUrl = info?.WhipUrl ?? string.Empty;
+        }
+        catch (Exception ex)
+        {
+            _status = ex.Message;
+        }
+    }
+
+    private async Task LoadDevicesAsync()
+    {
+        _loadingDevices = true;
+        try
+        {
+            var devices = await Js.InvokeAsync<DeviceOption[]>("MediaKitWhip.listDevices");
+            _videoDevices = devices.Where(x => x.Kind == "videoinput").ToList();
+            _audioDevices = devices.Where(x => x.Kind == "audioinput").ToList();
+            Message.Success($"已加载 {_videoDevices.Count} 个视频 / {_audioDevices.Count} 个音频设备");
+        }
+        catch (Exception ex) { Message.Error(ex.Message); }
+        finally { _loadingDevices = false; }
+    }
+
+    private async Task StartAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_whipUrl))
+        {
+            Message.Warning("请先选择实例并填写 app/stream");
+            return;
+        }
+        _starting = true;
+        try
+        {
+            await Js.InvokeVoidAsync("MediaKitWhip.start", _videoRef, _whipUrl,
+                string.IsNullOrWhiteSpace(_videoDeviceId) ? null : _videoDeviceId,
+                string.IsNullOrWhiteSpace(_audioDeviceId) ? null : _audioDeviceId);
+            _streaming = true;
+            _status = $"正在推流到 {_app}/{_stream}";
+            Message.Success("WHIP 推流已建立");
+        }
+        catch (Exception ex)
+        {
+            _streaming = false;
+            _status = ex.Message;
+            Message.Error(ex.Message);
+        }
+        finally { _starting = false; }
+    }
+
+    private async Task StopAsync()
+    {
+        try
+        {
+            await Js.InvokeVoidAsync("MediaKitWhip.stop");
+            _streaming = false;
+            _status = "已停止推流";
+            Message.Success("推流已停止");
+        }
+        catch (Exception ex) { Message.Error(ex.Message); }
+    }
+}
