@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Net.Sockets;
+using System.Text;
 using System.Text.RegularExpressions;
 using Apiext.MediaKit.Server.Apis;
 using Apiext.MediaKit.Server.Persistence;
@@ -115,9 +117,82 @@ public class PullProxyService
         return rows;
     }
 
+    /// <summary>
+    /// 测试源流地址连通性（不落库、不在 ZLM 建拉流任务）：TCP 建连，RTSP 额外发 OPTIONS 探测。
+    /// 只验证「地址可达 / 是否需要鉴权」，不代表端到端一定能出画面（编码、鉴权方式只有真正拉流时才知道）。
+    /// </summary>
+    public async Task<(bool Ok, string Message)> TestSourceAsync(string url)
+    {
+        if (!IsValidUrl(url))
+            return (false, "源流地址必须以 rtsp://、rtmp://、http:// 或 https:// 开头");
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || string.IsNullOrWhiteSpace(uri.Host))
+            return (false, "源流地址格式不正确，无法解析主机名");
+
+        var port = uri.Port;
+        if (port <= 0)
+        {
+            port = uri.Scheme.ToLowerInvariant() switch
+            {
+                "rtsp" => 554,
+                "rtmp" => 1935,
+                "https" => 443,
+                _ => 80,
+            };
+        }
+
+        var target = $"{uri.Host}:{port}";
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+        using var tcp = new TcpClient();
+        try
+        {
+            await tcp.ConnectAsync(uri.Host, port, cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return (false, $"连接 {target} 超时（6 秒），请检查 IP / 端口 / 防火墙");
+        }
+        catch (Exception ex)
+        {
+            return (false, $"连接 {target} 失败：{ex.Message}");
+        }
+
+        if (!uri.Scheme.Equals("rtsp", StringComparison.OrdinalIgnoreCase))
+            return (true, $"连接 {target} 成功（能否取流取决于账号密码与编码）");
+
+        try
+        {
+            using var stream = tcp.GetStream();
+            var request = $"OPTIONS {url} RTSP/1.0\r\nCSeq: 1\r\nUser-Agent: ApiextMediaKit\r\n\r\n";
+            await stream.WriteAsync(Encoding.ASCII.GetBytes(request), cts.Token);
+
+            var buffer = new byte[512];
+            var read = await stream.ReadAsync(buffer, cts.Token);
+            var statusLine = read > 0
+                ? Encoding.ASCII.GetString(buffer, 0, read).Split('\r', '\n')[0]
+                : string.Empty;
+
+            if (statusLine.Contains(" 200", StringComparison.Ordinal))
+                return (true, $"RTSP {target} 可达，OPTIONS 返回 200");
+            if (statusLine.Contains(" 401", StringComparison.Ordinal) || statusLine.Contains(" 403", StringComparison.Ordinal))
+                return (true, $"RTSP {target} 可达，但需要鉴权（{statusLine}）；请确认用户名/密码/通道号");
+            if (string.IsNullOrWhiteSpace(statusLine))
+                return (true, $"RTSP 端口 {target} 可达，但未收到响应（部分设备限制 OPTIONS）");
+            return (true, $"RTSP {target} 可达，返回：{statusLine}");
+        }
+        catch (Exception ex)
+        {
+            return (true, $"RTSP 端口 {target} 可达，OPTIONS 探测未完成：{ex.Message}");
+        }
+    }
+
+    /// <param name="force">
+    /// 强制添加：ZLM 启动拉流失败时仍保留配置（返回成功 + 告警），供现场先占位、稍后重新拉流；
+    /// 为 false 时启动失败会回滚刚写入的记录，避免「提示失败但记录已存在」。
+    /// </param>
     public async Task<(bool Ok, string? Error)> AddAsync(
         string vhost, string app, string stream, string url, int? audioType,
-        bool enableOnDemand = false, bool enableRecord = false, string pullMode = "native", string outputCodec = "copy")
+        bool enableOnDemand = false, bool enableRecord = false, string pullMode = "native", string outputCodec = "copy",
+        bool force = false)
     {
         if (!IsValidName(app) || !IsValidName(stream))
             return (false, "应用名/流 ID 只能包含字母、数字、下划线(_)、短横线(-)或英文句点(.)");
@@ -155,6 +230,19 @@ public class PullProxyService
         }
         catch (Exception ex)
         {
+            if (force)
+            {
+                // 强制添加：配置已落库，ZLM 启动失败只告警，用户可稍后在详情页「重新拉流」
+                _logger.LogWarning(ex, "[PullProxy] 强制添加 {App}/{Stream}：启动拉流失败，保留配置 源={Url}",
+                    app, stream, ZlmService.SafeSourceUrl(url));
+                return (true, $"已保存配置，但启动拉流失败：{ex.Message}（可稍后在设备详情页重新拉流）");
+            }
+
+            // 非强制：回滚刚写入的记录，避免「提示添加失败、重试却报该流已存在」
+            _db.PullProxies.Remove(entity);
+            await _db.SaveChangesAsync();
+            _logger.LogWarning(ex, "[PullProxy] 添加 {App}/{Stream} 失败，已回滚记录 源={Url}",
+                app, stream, ZlmService.SafeSourceUrl(url));
             return (false, $"ZLM 添加失败：{ex.Message}");
         }
 

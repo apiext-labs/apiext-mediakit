@@ -211,12 +211,35 @@
         </TabPane>
     </Tabs>
 
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
-        <Button OnClick="Close">@(_addProto == "gb" ? "关闭" : "取消")</Button>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:16px;">
         @if (_addProto != "gb")
         {
-            <Button Type="@ButtonType.Primary" Loading="_addLoading" OnClick="@(async () => await SubmitAdd())">确定</Button>
+            <Button Icon="thunderbolt" Loading="@_testing" Disabled="@_addLoading" OnClick="@(async () => await TestAsync())">测试</Button>
         }
+        <div style="margin-left:auto;display:flex;gap:8px;">
+            <Button OnClick="Close">@(_addProto == "gb" ? "关闭" : "取消")</Button>
+            @if (_addProto != "gb")
+            {
+                <Button Type="@ButtonType.Primary" Loading="@_addLoading" OnClick="@(async () => await SubmitAdd(false))">确定</Button>
+            }
+        </div>
+    </div>
+</Modal>
+
+@* 添加出错后的二次确认：强制添加只在用户明确确认后执行 *@
+<Modal Title="@("继续添加？")"
+       Visible="@_forceVisible"
+       Width="480"
+       Footer="null"
+       OnCancel="@(() => _forceVisible = false)">
+    <Alert Type="@AlertType.Warning" ShowIcon="true"
+           Message="@($"添加时出现问题：{_forceError}")" />
+    <div style="margin-top:12px;color:#718096;font-size:13px;line-height:1.7;">
+        仍然继续添加吗？将先保存设备配置（可能暂时离线或不可用），之后可在设备详情页重新拉流或修正参数。
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
+        <Button OnClick="@(() => _forceVisible = false)">取消</Button>
+        <Button Type="@ButtonType.Primary" Loading="@_addLoading" OnClick="@(async () => await ConfirmForceAddAsync())">仍然添加</Button>
     </div>
 </Modal>
 
@@ -239,6 +262,9 @@
     private bool _wasVisible;
 
     private bool _addLoading;
+    private bool _testing;
+    private bool _forceVisible;
+    private string _forceError = "";
     private string _addProto = "pull";
 
     // PULL / RTMP
@@ -296,6 +322,9 @@
         _presetDeviceId = "";
         _presetName = "";
         _presetPassword = "";
+        _testing = false;
+        _forceVisible = false;
+        _forceError = "";
     }
 
     private Task Close() => Visible ? VisibleChanged.InvokeAsync(false) : Task.CompletedTask;
@@ -356,7 +385,7 @@
         }
     }
 
-    private async Task SubmitAdd()
+    private async Task SubmitAdd(bool force)
     {
         if (_addProto == "pull")
         {
@@ -382,19 +411,10 @@
             }
 
             _addLoading = true;
-            var (ok, error) = await PullProxy.AddAsync("__defaultVhost__", _addApp.Trim(), _addStream.Trim(), _addUrl.Trim(), null, _addOnDemand, _addRecord, _addPullMode, _addOutputCodec);
+            var (ok, message) = await PullProxy.AddAsync("__defaultVhost__", _addApp.Trim(), _addStream.Trim(), _addUrl.Trim(), null, _addOnDemand, _addRecord, _addPullMode, _addOutputCodec, force);
             _addLoading = false;
 
-            if (ok)
-            {
-                await VisibleChanged.InvokeAsync(false);
-                Message.Success("添加成功");
-                await OnAdded.InvokeAsync();
-            }
-            else
-            {
-                Message.Error(error ?? "添加失败");
-            }
+            await HandleAddResultAsync(ok, message, force);
         }
         else if (_addProto == "onvif")
         {
@@ -405,26 +425,100 @@
             }
 
             _addLoading = true;
-            var (ok, error, _) = await Onvif.AddAsync(
+            var (ok, message, _) = await Onvif.AddAsync(
                 _onvifHost.Trim(), _onvifPort, _onvifUser.Trim(), _onvifPwd,
-                string.IsNullOrWhiteSpace(_onvifName) ? null : _onvifName.Trim());
+                string.IsNullOrWhiteSpace(_onvifName) ? null : _onvifName.Trim(), force);
             _addLoading = false;
 
-            if (ok)
-            {
-                await VisibleChanged.InvokeAsync(false);
-                Message.Success("添加成功");
-                await OnAdded.InvokeAsync();
-            }
-            else
-            {
-                Message.Error(error ?? "添加失败");
-            }
+            await HandleAddResultAsync(ok, message, force);
         }
         else
         {
             // GB28181 设备通过主动注册接入，对话框不提供「确定」按钮，此分支仅为兜底
             return;
+        }
+    }
+
+    /// <summary>统一处理添加结果：成功（含强制添加的告警）关闭对话框；失败则二次确认是否强制添加。</summary>
+    private async Task HandleAddResultAsync(bool ok, string? message, bool force)
+    {
+        if (ok)
+        {
+            await VisibleChanged.InvokeAsync(false);
+            if (string.IsNullOrWhiteSpace(message))
+                Message.Success("添加成功");
+            else
+                Message.Warning(message);
+            await OnAdded.InvokeAsync();
+            return;
+        }
+
+        // 已强制添加仍失败（多为格式/重名等不可绕过的校验）→ 直接提示，避免反复弹窗
+        if (force)
+        {
+            Message.Error(message ?? "添加失败");
+            return;
+        }
+
+        _forceError = string.IsNullOrWhiteSpace(message) ? "添加失败" : message!;
+        _forceVisible = true;
+    }
+
+    private async Task ConfirmForceAddAsync()
+    {
+        _forceVisible = false;
+        await SubmitAdd(true);
+    }
+
+    private async Task TestAsync()
+    {
+        if (_addProto == "pull")
+        {
+            if (string.IsNullOrWhiteSpace(_addUrl))
+            {
+                Message.Warning("请填写源流地址");
+                return;
+            }
+
+            _testing = true;
+            try
+            {
+                var (ok, message) = await PullProxy.TestSourceAsync(_addUrl.Trim());
+                if (ok) Message.Success(message);
+                else Message.Error(message);
+            }
+            catch (Exception ex)
+            {
+                Message.Error($"测试失败：{ex.Message}");
+            }
+            finally
+            {
+                _testing = false;
+            }
+        }
+        else if (_addProto == "onvif")
+        {
+            if (string.IsNullOrWhiteSpace(_onvifHost) || string.IsNullOrWhiteSpace(_onvifUser) || string.IsNullOrWhiteSpace(_onvifPwd))
+            {
+                Message.Warning("请填写设备 IP、用户名和密码");
+                return;
+            }
+
+            _testing = true;
+            try
+            {
+                var (ok, message) = await Onvif.TestAsync(_onvifHost.Trim(), _onvifPort, _onvifUser.Trim(), _onvifPwd);
+                if (ok) Message.Success(message);
+                else Message.Error(message);
+            }
+            catch (Exception ex)
+            {
+                Message.Error($"测试失败：{ex.Message}");
+            }
+            finally
+            {
+                _testing = false;
+            }
         }
     }
 

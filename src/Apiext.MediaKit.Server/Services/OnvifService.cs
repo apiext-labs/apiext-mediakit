@@ -32,34 +32,78 @@ public class OnvifService
     public Task<List<OnvifDevice>> ListAsync()
         => _db.OnvifDevices.OrderBy(d => d.CreatedAt).ToListAsync();
 
-    /// <summary>手动添加设备（验证连接 + 获取设备信息）。</summary>
-    public async Task<(bool Ok, string? Error, OnvifDevice? Device)> AddAsync(
-        string host, int port, string username, string password, string? name = null)
+    /// <summary>测试设备连通性与认证（不落库，仅取设备信息）。</summary>
+    public async Task<(bool Ok, string Message)> TestAsync(string host, int port, string username, string password)
     {
-        var client = CreateClient(host, port, username, password);
-        var info = await client.GetDeviceInformationAsync();
+        try
+        {
+            var client = CreateClient(host, port, username, password);
+            var info = await client.GetDeviceInformationAsync();
+            if (info == null)
+            {
+                _logger.LogWarning("[Onvif] 测试设备失败：连接或认证不通过 {Host}:{Port}", host, port);
+                return (false, "连接或认证失败（请确认 IP / 端口 / 账号密码，且设备已开启 ONVIF）");
+            }
+
+            var model = string.Join(" ", new[] { info.Manufacturer, info.Model }
+                .Where(s => !string.IsNullOrWhiteSpace(s)));
+            var fw = string.IsNullOrWhiteSpace(info.FirmwareVersion) ? string.Empty : $"，固件 {info.FirmwareVersion}";
+            return (true, $"连接成功：{(string.IsNullOrWhiteSpace(model) ? "已识别设备" : model)}{fw}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Onvif] 测试设备异常 {Host}:{Port}", host, port);
+            return (false, $"连接异常：{ex.Message}");
+        }
+    }
+
+    /// <summary>手动添加设备（验证连接 + 获取设备信息）。</summary>
+    /// <param name="force">强制添加：连接/认证不通过时仍保存设备，供稍后修正地址或账号密码。</param>
+    public async Task<(bool Ok, string? Error, OnvifDevice? Device)> AddAsync(
+        string host, int port, string username, string password, string? name = null, bool force = false)
+    {
+        OnvifDeviceInfo? info = null;
+        try
+        {
+            var client = CreateClient(host, port, username, password);
+            info = await client.GetDeviceInformationAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Onvif] 添加设备时连接异常 {Host}:{Port}", host, port);
+        }
+
+        string? warning = null;
         if (info == null)
         {
-            _logger.LogWarning("[Onvif] 添加设备失败：连接或认证不通过 {Host}:{Port}", host, port);
-            return (false, "无法连接设备或认证失败（请确认 IP/端口/账号密码）", null);
+            if (!force)
+            {
+                _logger.LogWarning("[Onvif] 添加设备失败：连接或认证不通过 {Host}:{Port}", host, port);
+                return (false, "无法连接设备或认证失败（请确认 IP/端口/账号密码）", null);
+            }
+
+            warning = "未能连接设备，已强制保存（请稍后检查 IP / 端口 / 账号密码）";
+            _logger.LogWarning("[Onvif] 强制添加未验证设备 {Host}:{Port}", host, port);
         }
 
         var device = new OnvifDevice
         {
-            Name = string.IsNullOrWhiteSpace(name) ? info.Model : name,
+            Name = !string.IsNullOrWhiteSpace(name)
+                ? name!
+                : (!string.IsNullOrWhiteSpace(info?.Model) ? info!.Model : host),
             Host = host,
             Port = port,
             Username = username,
             Password = password,
-            Manufacturer = info.Manufacturer,
-            Model = info.Model,
+            Manufacturer = info?.Manufacturer ?? string.Empty,
+            Model = info?.Model ?? string.Empty,
             CreatedAt = DateTime.UtcNow,
         };
         _db.OnvifDevices.Add(device);
         await _db.SaveChangesAsync();
         _logger.LogInformation("[Onvif] 已添加设备 {Name} {Host}:{Port} 型号={Model}",
             device.Name, device.Host, device.Port, device.Model);
-        return (true, null, device);
+        return (true, warning, device);
     }
 
     public async Task DeleteAsync(int id)
