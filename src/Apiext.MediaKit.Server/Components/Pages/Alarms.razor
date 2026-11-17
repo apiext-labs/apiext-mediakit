@@ -1,0 +1,74 @@
+@page "/alarms"
+@attribute [Authorize]
+@using Microsoft.EntityFrameworkCore
+@inject AppDbContext Db
+@inject MessageService Message
+
+<Card>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
+        <div style="width:300px;">
+            <Input Placeholder="按设备/通道编码搜索" @bind-Value="_search" AllowClear="true"
+                   OnPressEnter="@(_ => LoadAsync())" />
+        </div>
+        <Button Icon="reload" OnClick="LoadAsync">刷新</Button>
+        <Text Type="@TextElementType.Secondary">最近 500 条 GB28181 设备报警</Text>
+    </div>
+
+    <Table DataSource="Filtered" Loading="_loading" Size="@TableSize.Small">
+        <AntDesign.Column Title="报警时间" Width="170" TData="string">
+            @context.AlarmTime.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+        </AntDesign.Column>
+        <AntDesign.Column Title="设备/通道编码" @bind-Field="@context.DeviceId" />
+        <AntDesign.Column Title="优先级" Width="90" TData="string">
+            <Tag Color="@PriorityColor(context.AlarmPriority)">@context.AlarmPriority</Tag>
+        </AntDesign.Column>
+        <AntDesign.Column Title="报警方式" Width="100" @bind-Field="@context.AlarmMethod" />
+        <AntDesign.Column Title="描述" @bind-Field="@context.AlarmDescription" />
+    </Table>
+
+    @if (_rows.Count == 0 && !_loading)
+    {
+        <div style="text-align:center;padding:24px;color:#718096;">暂无报警记录</div>
+    }
+</Card>
+
+@code {
+    private bool _loading = true;
+    private List<GbAlarm> _rows = new();
+    private string _search = "";
+
+    private List<GbAlarm> Filtered => string.IsNullOrWhiteSpace(_search)
+        ? _rows
+        : _rows.Where(r => r.DeviceId.Contains(_search, StringComparison.OrdinalIgnoreCase)).ToList();
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _rows = await Db.GbAlarms
+                .OrderByDescending(a => a.AlarmTime)
+                .Take(500)
+                .ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载报警失败：{ex.Message}");
+            _rows = new();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private static string PriorityColor(string priority) => priority switch
+    {
+        "1" => "red",
+        "2" => "orange",
+        "3" => "blue",
+        _ => "default",
+    };
+}

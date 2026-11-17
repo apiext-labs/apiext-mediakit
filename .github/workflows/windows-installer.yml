@@ -1,0 +1,143 @@
+# 构建 Windows 单文件安装包（NSIS）并发布到 GitHub Releases
+#
+# 触发：
+#   - 推送 v* 标签：构建并创建/更新同名 Release，上传 Apiext-MediaKit-Setup-<版本>.exe
+#   - 推 main / 手动：只构建并上传为 Actions artifact（不发布）
+#
+# 载荷（不进仓库，构建时下载）：
+#   deploy/windows/zlm       ZLMediaKit 官方 Windows CI 产物（MediaServer.exe + default.pem）
+#   deploy/windows/ffmpeg    gyan.dev essentials build 的 ffmpeg.exe
+#   deploy/windows/nssm.exe  NSSM 2.24 win64
+# 由 deploy/windows/fetch-payload.ps1 负责，默认走 nightly.link 免登录直链。
+
+name: Windows Installer
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      zlm_artifact_url:
+        description: "覆盖 ZLMediaKit 产物 zip 地址（留空则用 nightly.link 最新产物）"
+        required: false
+        type: string
+        default: ""
+
+env:
+  TZ: Asia/Shanghai
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Publish & package
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          $ver = ""
+          if ($env:GITHUB_REF -like "refs/tags/v*") {
+            $ver = $env:GITHUB_REF.Substring("refs/tags/v".Length)
+          }
+          if (-not $ver) {
+            $m = Select-String -Path deploy/windows/installer.nsi -Pattern '!define\s+APP_VERSION\s+"([^"]+)"' | Select-Object -First 1
+            $ver = $m.Matches[0].Groups[1].Value
+          }
+          "version=$ver" >> $env:GITHUB_OUTPUT
+          Write-Host "版本号：$ver"
+
+      - name: Patch installer.nsi version
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.version.outputs.version }}"
+          $nsi = (Resolve-Path "deploy/windows/installer.nsi").Path
+          $text = [IO.File]::ReadAllText($nsi)
+          $text = $text -replace '!define\s+APP_VERSION\s+"[^"]+"', ('!define APP_VERSION     "' + $ver + '"')
+          # installer.nsi 是 UTF-8 with BOM 且 `Unicode true`，必须保留 BOM，否则 makensis 按 ANSI 解析导致中文乱码
+          [IO.File]::WriteAllText($nsi, $text, (New-Object System.Text.UTF8Encoding($true)))
+          Write-Host "APP_VERSION → $ver"
+
+      - name: dotnet publish (self-contained win-x64)
+        shell: pwsh
+        run: ./deploy/windows/publish-app.ps1
+
+      - name: Fetch third-party payload (ZLMediaKit / ffmpeg / NSSM)
+        shell: pwsh
+        env:
+          ZLM_ARTIFACT_URL: ${{ inputs.zlm_artifact_url }}
+        run: |
+          if ($env:ZLM_ARTIFACT_URL) {
+            ./deploy/windows/fetch-payload.ps1 -ZlmArtifactUrl $env:ZLM_ARTIFACT_URL
+          }
+          else {
+            ./deploy/windows/fetch-payload.ps1
+          }
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis --no-progress -y
+          $nsis = "C:\Program Files (x86)\NSIS"
+          if (-not (Test-Path (Join-Path $nsis "makensis.exe"))) {
+            $found = Get-ChildItem "C:\Program Files*" -Filter makensis.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { $nsis = $found.DirectoryName }
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $nsis
+          Write-Host "NSIS: $nsis"
+
+      - name: Build installer
+        shell: pwsh
+        run: ./deploy/windows/build-installer.ps1
+
+      - name: Verify installer exists
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem deploy/windows -Filter "Apiext-MediaKit-Setup-*.exe" | Select-Object -First 1
+          if (-not $setup) { throw "没有生成安装包" }
+          Write-Host ("产物：{0}（{1} MB）" -f $setup.Name, [math]::Round($setup.Length / 1MB, 1))
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apiext-mediakit-setup-${{ steps.version.outputs.version }}
+          path: deploy/windows/Apiext-MediaKit-Setup-*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Release (tag push only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: deploy/windows/Apiext-MediaKit-Setup-*.exe
+          name: Apiext MediaKit ${{ github.ref_name }} — Windows 原生部署版
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            ### Windows 安装包
+
+            - `Apiext-MediaKit-Setup-${{ steps.version.outputs.version }}.exe`：内置 .NET 10 自包含运行时 + ZLMediaKit + ffmpeg + NSSM
+            - 目标机无需 Docker、无需安装 .NET，双击运行即可；静默安装：`/S /D=C:\apiext-mediakit`
+            - 默认端口：管理平台 **28080**、ZLM HTTP 28180、RTSP 28554、RTMP 28335、WebRTC 28000、SRT 29000、国标 SIP 28060、RTP 21000 / UDP 24000-24500（向导内可改）
+            - 装完两个服务开机自启：`Apiext-MediaKit-App` / `Apiext-MediaKit-ZLM`；账号密码与各项密钥见安装目录 `install-report.txt`
+
+            ### Docker 镜像
+
+            - `ghcr.io/${{ github.repository }}:${{ github.ref_name }}`（多架构见 Actions → Docker Image）

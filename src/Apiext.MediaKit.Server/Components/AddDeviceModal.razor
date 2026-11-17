@@ -1,0 +1,503 @@
+@* 设备列表 → 添加设备（拉流 RTSP/RTMP/HTTP-FLV、ONVIF、GB28181） *@
+<Modal Title="添加"
+       Visible="@Visible"
+       Width="720"
+       Footer="null"
+       OnCancel="Close">
+    <Tabs @bind-ActiveKey="_addProto">
+        <TabPane Key="pull" Tab="拉流（RTSP/RTMP/HTTP-FLV）">
+            <div style="display:flex;flex-direction:column;gap:16px;padding-top:8px;">
+                <div>
+                    <div style="margin-bottom:6px;">
+                        <Text Strong="true">源流地址</Text><span style="color:#ff4d4f;"> *</span>
+                        <Popover Title="常见 RTSP 规则" Placement="@Placement.RightTop">
+                            <ChildContent>
+                                <span class="rtsp-tip-link">常见 RTSP 规则</span>
+                            </ChildContent>
+                            <ContentTemplate>
+                                <div style="width:720px;max-width:calc(100vw - 48px);max-height:440px;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:12px;">
+                                    @foreach (var (vendor, items) in RtspRuleCatalog.Rules)
+                                    {
+                                        <div>
+                                            <div class="rtsp-vendor">@vendor</div>
+                                            @foreach (var item in items)
+                                            {
+                                                <div class="rtsp-item" title="点击填入地址" @onclick="@(() => UseRule(item))">@item</div>
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                            </ContentTemplate>
+                        </Popover>
+                    </div>
+                    <Input Placeholder="请输入源流地址" @bind-Value="_addUrl" />
+                    <div style="margin-top:6px;color:#9aa5b1;font-size:12px;">示例：rtsp://用户名:密码@IP:554/h264/ch1、rtmp://IP:1935/live/流ID、http://服务器:8080/live/流ID.live.flv</div>
+                </div>
+                <div>
+                    <div style="margin-bottom:6px;"><Text Strong="true">流 ID</Text></div>
+                    <Input Placeholder="如 cam1" @bind-Value="_addStream" />
+                    <div style="margin-top:6px;color:#9aa5b1;font-size:12px;">留空则提交时自动从源流地址提取</div>
+                </div>
+                <div>
+                    <div style="margin-bottom:6px;"><Text Strong="true">应用名</Text></div>
+                    <Input Placeholder="如 live" @bind-Value="_addApp" />
+                </div>
+                <div>
+                    <div style="margin-bottom:6px;"><Text Strong="true">取流模式</Text></div>
+                    <RadioGroup @bind-Value="_addPullMode" ButtonStyle="@RadioButtonStyle.Solid">
+                        <Radio RadioButton="true" Value="@("native")">标准</Radio>
+                        <Radio RadioButton="true" Value="@("ffmpeg")">兼容</Radio>
+                    </RadioGroup>
+                    <div style="margin-top:6px;color:#9aa5b1;font-size:12px;">默认用「标准」即可；只有取流失败、画面异常（黑屏、花屏、无声）时才换成「兼容」。</div>
+                </div>
+                @if (_addPullMode == "ffmpeg")
+                {
+                    <div>
+                        <div style="margin-bottom:6px;"><Text Strong="true">输出编码</Text></div>
+                        <RadioGroup @bind-Value="_addOutputCodec" ButtonStyle="@RadioButtonStyle.Solid">
+                            <Radio RadioButton="true" Value="@("copy")">直通</Radio>
+                            <Radio RadioButton="true" Value="@("h264")">H.264</Radio>
+                            <Radio RadioButton="true" Value="@("h265")">H.265</Radio>
+                        </RadioGroup>
+                        <div style="margin-top:6px;color:#9aa5b1;font-size:12px;">直通：不转码、画质无损；选 H.264 / H.265 会重新编码，兼容性更好但更耗 CPU。</div>
+                    </div>
+                }
+                <Space>
+                    <Text>按需拉流</Text>
+                    <Switch @bind-Value="_addOnDemand" />
+                    <Text Style="margin-left:16px;">录像</Text>
+                    <Switch @bind-Value="_addRecord" />
+                </Space>
+                <span style="color:#718096;font-size:12px;">按需拉流：无人观看时自动断流，节省带宽；录像：持续拉流并录制 MP4。</span>
+            </div>
+        </TabPane>
+
+        <TabPane Key="onvif" Tab="ONVIF">
+            <div style="display:flex;flex-direction:column;gap:16px;padding-top:8px;">
+                <div>
+                    <Button Icon="radar-chart" Loading="@_scanning" OnClick="@(async () => await ScanAsync())">扫描发现</Button>
+                    @if (_discovered.Count > 0)
+                    {
+                        <div style="margin-top:8px;border:1px solid #f0f0f0;border-radius:6px;max-height:160px;overflow:auto;">
+                            @foreach (var d in _discovered)
+                            {
+                                <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-bottom:1px solid #f0f0f0;">
+                                    <span>@d.Host:@d.Port @d.Name</span>
+                                    <Button Size="@ButtonSize.Small" OnClick="@(() => PickDiscovered(d))">使用</Button>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+                <div>
+                    <div style="margin-bottom:6px;"><Text Strong="true">设备 IP</Text><span style="color:#ff4d4f;"> *</span></div>
+                    <div style="display:flex;gap:12px;">
+                        <Input Placeholder="如 192.168.1.64" @bind-Value="_onvifHost" Style="flex:1;" />
+                        <AntDesign.InputNumber @bind-Value="_onvifPort" Min="1" Max="65535" Style="width:110px;" Placeholder="端口" />
+                    </div>
+                    <div style="margin-top:6px;color:#9aa5b1;font-size:12px;">ONVIF 服务端口，通常为 80</div>
+                </div>
+                <div>
+                    <div style="margin-bottom:6px;"><Text Strong="true">用户名</Text><span style="color:#ff4d4f;"> *</span></div>
+                    <Input Placeholder="请输入用户名" @bind-Value="_onvifUser" />
+                </div>
+                <div>
+                    <div style="margin-bottom:6px;"><Text Strong="true">密码</Text><span style="color:#ff4d4f;"> *</span></div>
+                    <InputPassword Placeholder="请输入密码" @bind-Value="_onvifPwd" />
+                </div>
+                <div>
+                    <div style="margin-bottom:6px;"><Text Strong="true">设备名称</Text></div>
+                    <Input Placeholder="请输入设备名称" @bind-Value="_onvifName" />
+                    <div style="margin-top:6px;color:#9aa5b1;font-size:12px;">留空则自动取设备型号</div>
+                </div>
+            </div>
+        </TabPane>
+
+        <TabPane Key="gb" Tab="GB28181">
+            <div style="display:flex;flex-direction:column;gap:16px;padding-top:8px;">
+                <Alert Type="@AlertType.Info" ShowIcon="true"
+                       Message="GB28181 设备由设备侧主动注册接入，无需在此添加：把下面的平台参数填到设备端并保存，设备上线后自动出现在设备列表。" />
+                @* 接入模式（只读展示，切换在高级配置 → SIP 接入） *@
+                <div>
+                    <div style="margin-bottom:8px;"><Text Strong="true">接入模式</Text></div>
+                    <Tag Color="@(_gbAccessMode == "whitelist" ? "orange" : "green")">
+                        @(_gbAccessMode == "whitelist" ? "预登记 + 白名单鉴权" : "注册即接入")
+                    </Tag>
+                    <span style="color:#9aa5b1;font-size:12px;margin-left:8px;">可在「高级配置 → SIP 接入」切换</span>
+                    <div style="margin-top:8px;color:#9aa5b1;font-size:12px;">
+                        @(_gbAccessMode == "whitelist"
+                            ? "仅预登记的设备（国标 ID + 密码）可注册接入，未登记设备将被拒绝。"
+                            : "设备配置好平台参数后主动注册即可接入（全局统一密码）。")
+                    </div>
+                </div>
+
+                @* 平台 SIP 参数 *@
+                <div>
+                    <div style="margin-bottom:8px;">
+                        <Text Strong="true">平台 SIP 参数</Text>
+                        <span style="color:#9aa5b1;font-size:12px;">　配置到设备端「国标服务器 / 平台接入」</span>
+                    </div>
+                    <div class="gb-kv-table">
+                        <div class="gb-kv"><div class="gb-k">SIP 端口</div><div class="gb-v">@Sip.SipPort (UDP)</div></div>
+                        <div class="gb-kv"><div class="gb-k">SIP 域</div><div class="gb-v">@Sip.SipDomain</div></div>
+                        <div class="gb-kv"><div class="gb-k">平台编码</div><div class="gb-v">@Sip.SipId</div></div>
+                        <div class="gb-kv"><div class="gb-k">本机 IP</div><div class="gb-v">@Sip.LocalIp</div></div>
+                        <div class="gb-kv"><div class="gb-k">媒体 IP</div><div class="gb-v">@Sip.MediaIp（设备推流目标）</div></div>
+                    </div>
+                </div>
+
+                @if (_gbAccessMode == "whitelist")
+                {
+                    @* 预登记设备 *@
+                    <div>
+                        <div style="margin-bottom:8px;"><Text Strong="true">预登记设备（白名单）</Text></div>
+                        <div style="border:1px solid #f0f0f0;border-radius:6px;padding:12px 16px;">
+                            <div style="margin-bottom:10px;">
+                                <div class="gb-field-label">国标 ID（20 位设备编码）</div>
+                                <Input @bind-Value="_presetDeviceId" Placeholder="如 34020000001320000001" />
+                            </div>
+                            <AntDesign.Row Gutter="12">
+                                <AntDesign.Col Span="12">
+                                    <div class="gb-field-label">设备名称（可空）</div>
+                                    <Input @bind-Value="_presetName" Placeholder="展示名称" />
+                                </AntDesign.Col>
+                                <AntDesign.Col Span="12">
+                                    <div class="gb-field-label">接入密码（可空则用全局密码）</div>
+                                    <InputPassword @bind-Value="_presetPassword" Placeholder="接入密码" />
+                                </AntDesign.Col>
+                            </AntDesign.Row>
+                            <Space Style="margin-top:12px;">
+                                <Button Type="@ButtonType.Primary" Size="@ButtonSize.Small" Loading="@_presetSaving" OnClick="@(async () => await AddPresetAsync())">预登记</Button>
+                                <span style="color:#9aa5b1;font-size:12px;">登记后设备方可注册接入</span>
+                            </Space>
+                        </div>
+                    </div>
+
+                    @if (_presetDevices.Count > 0)
+                    {
+                        <Table DataSource="_presetDevices" Size="@TableSize.Small">
+                            <AntDesign.Column Title="国标 ID" @bind-Field="@context.DeviceId" />
+                            <AntDesign.Column Title="名称" @bind-Field="@context.Name" />
+                            <ActionColumn Title="操作" Width="90">
+                                <Popconfirm Title="删除该预登记设备？" OkText="删除" CancelText="取消" OnConfirm="@(() => DeletePresetAsync(context))">
+                                    <Button Type="@ButtonType.Link" Danger="true" Size="@ButtonSize.Small">删除</Button>
+                                </Popconfirm>
+                            </ActionColumn>
+                        </Table>
+                    }
+                }
+
+                @* 接入引导 *@
+                <div>
+                    <div style="margin-bottom:8px;"><Text Strong="true">接入步骤</Text></div>
+                    @if (_gbAccessMode == "whitelist")
+                    {
+                        <Steps Size="@StepsSize.Small">
+                            <Step Title="预登记设备" Description="填写国标 ID 与接入密码" />
+                            <Step Title="设备端填写参数" Description="平台地址、编码、密码与预登记一致" />
+                            <Step Title="注册鉴权接入" Description="校验白名单通过后自动上线" />
+                        </Steps>
+                    }
+                    else
+                    {
+                        <Steps Size="@StepsSize.Small">
+                            <Step Title="设备端开启 GB28181" Description="海康：网络 → 高级 → 集成协议" />
+                            <Step Title="填写平台参数" Description="地址、SIP 域、设备编码、密码" />
+                            <Step Title="保存自动注册" Description="上线后出现在设备列表" />
+                        </Steps>
+                    }
+                </div>
+            </div>
+        </TabPane>
+    </Tabs>
+
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
+        <Button OnClick="Close">@(_addProto == "gb" ? "关闭" : "取消")</Button>
+        @if (_addProto != "gb")
+        {
+            <Button Type="@ButtonType.Primary" Loading="_addLoading" OnClick="@(async () => await SubmitAdd())">确定</Button>
+        }
+    </div>
+</Modal>
+
+@code {
+    [Inject] private PullProxyService PullProxy { get; set; } = default!;
+    [Inject] private OnvifService Onvif { get; set; } = default!;
+    [Inject] private Gb28181Service Gb { get; set; } = default!;
+    [Inject] private GbSipEngine Sip { get; set; } = default!;
+    [Inject] private MessageService Message { get; set; } = default!;
+
+    /// <summary>对话框是否可见（支持 @bind-Visible）。</summary>
+    [Parameter] public bool Visible { get; set; }
+
+    /// <summary>可见性变更回调。</summary>
+    [Parameter] public EventCallback<bool> VisibleChanged { get; set; }
+
+    /// <summary>添加成功后回调（父页面刷新列表用）。</summary>
+    [Parameter] public EventCallback OnAdded { get; set; }
+
+    private bool _wasVisible;
+
+    private bool _addLoading;
+    private string _addProto = "pull";
+
+    // PULL / RTMP
+    private string _addApp = "live";
+    private string _addStream = "";
+    private string _addUrl = "";
+    private bool _addOnDemand;
+    private bool _addRecord;
+    private string _addPullMode = "native";
+    private string _addOutputCodec = "copy";
+
+    // ONVIF
+    private string _onvifName = "";
+    private string _onvifHost = "";
+    private int _onvifPort = 80;
+    private string _onvifUser = "";
+    private string _onvifPwd = "";
+    private bool _scanning;
+    private List<OnvifDiscoveredDevice> _discovered = new();
+
+    // GB28181 接入模式（只读展示）与预登记
+    private string _gbAccessMode = "auto";
+    private List<GbPresetDevice> _presetDevices = new();
+    private string _presetDeviceId = "";
+    private string _presetName = "";
+    private string _presetPassword = "";
+    private bool _presetSaving;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Visible && !_wasVisible)
+        {
+            Reset();
+            await LoadGbAccessAsync();
+        }
+        _wasVisible = Visible;
+    }
+
+    private void Reset()
+    {
+        _addProto = "pull";
+        _addApp = "live";
+        _addStream = "";
+        _addUrl = "";
+        _addOnDemand = false;
+        _addRecord = false;
+        _addPullMode = "native";
+        _addOutputCodec = "copy";
+        _onvifName = "";
+        _onvifHost = "";
+        _onvifPort = 80;
+        _onvifUser = "";
+        _onvifPwd = "";
+        _discovered = new();
+        _presetDeviceId = "";
+        _presetName = "";
+        _presetPassword = "";
+    }
+
+    private Task Close() => Visible ? VisibleChanged.InvokeAsync(false) : Task.CompletedTask;
+
+    private void UseRule(string item)
+    {
+        // 去掉末尾的（主码）等中文括号注释后填入
+        var idx = item.IndexOf('（');
+        _addUrl = idx > 0 ? item[..idx] : item;
+    }
+
+    private async Task ScanAsync()
+    {
+        _scanning = true;
+        try
+        {
+            _discovered = await Onvif.DiscoverAsync(3);
+            if (_discovered.Count == 0) Message.Info("未发现 ONVIF 设备（请确认与平台同一局域网且已开启 ONVIF）");
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"扫描失败：{ex.Message}");
+        }
+        finally
+        {
+            _scanning = false;
+        }
+    }
+
+    private void PickDiscovered(OnvifDiscoveredDevice d)
+    {
+        _onvifHost = d.Host;
+        _onvifPort = d.Port;
+    }
+
+    /// <summary>流 ID 留空时，从源流地址最后一段提取合法字符作为流 ID。</summary>
+    private void AutoFillStreamId(string url)
+    {
+        if (!string.IsNullOrWhiteSpace(_addStream)) return;
+        try
+        {
+            var path = new Uri(url).AbsolutePath.TrimEnd('/');
+            var last = path.Split('/').LastOrDefault();
+            if (string.IsNullOrWhiteSpace(last)) return;
+            var sb = new System.Text.StringBuilder();
+            foreach (var c in last)
+            {
+                if (char.IsLetterOrDigit(c) || c == '_' || c == '-' || c == '.')
+                {
+                    sb.Append(c);
+                }
+            }
+            if (sb.Length > 0) _addStream = sb.ToString();
+        }
+        catch
+        {
+            // 地址尚未输入完整，忽略
+        }
+    }
+
+    private async Task SubmitAdd()
+    {
+        if (_addProto == "pull")
+        {
+            if (string.IsNullOrWhiteSpace(_addStream) && !string.IsNullOrWhiteSpace(_addUrl))
+            {
+                AutoFillStreamId(_addUrl);
+            }
+
+            if (string.IsNullOrWhiteSpace(_addUrl))
+            {
+                Message.Warning("请填写源流地址");
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(_addApp))
+            {
+                Message.Warning("请填写应用名（如 live）");
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(_addStream))
+            {
+                Message.Warning("请填写流 ID，或让源流地址带上可识别的名称以便自动提取");
+                return;
+            }
+
+            _addLoading = true;
+            var (ok, error) = await PullProxy.AddAsync("__defaultVhost__", _addApp.Trim(), _addStream.Trim(), _addUrl.Trim(), null, _addOnDemand, _addRecord, _addPullMode, _addOutputCodec);
+            _addLoading = false;
+
+            if (ok)
+            {
+                await VisibleChanged.InvokeAsync(false);
+                Message.Success("添加成功");
+                await OnAdded.InvokeAsync();
+            }
+            else
+            {
+                Message.Error(error ?? "添加失败");
+            }
+        }
+        else if (_addProto == "onvif")
+        {
+            if (string.IsNullOrWhiteSpace(_onvifHost) || string.IsNullOrWhiteSpace(_onvifUser) || string.IsNullOrWhiteSpace(_onvifPwd))
+            {
+                Message.Warning("请填写设备 IP、用户名和密码");
+                return;
+            }
+
+            _addLoading = true;
+            var (ok, error, _) = await Onvif.AddAsync(
+                _onvifHost.Trim(), _onvifPort, _onvifUser.Trim(), _onvifPwd,
+                string.IsNullOrWhiteSpace(_onvifName) ? null : _onvifName.Trim());
+            _addLoading = false;
+
+            if (ok)
+            {
+                await VisibleChanged.InvokeAsync(false);
+                Message.Success("添加成功");
+                await OnAdded.InvokeAsync();
+            }
+            else
+            {
+                Message.Error(error ?? "添加失败");
+            }
+        }
+        else
+        {
+            // GB28181 设备通过主动注册接入，对话框不提供「确定」按钮，此分支仅为兜底
+            return;
+        }
+    }
+
+    // ---------- GB28181 接入模式与预登记 ----------
+
+    private async Task LoadGbAccessAsync()
+    {
+        try
+        {
+            var mode = await Gb.GetAccessModeAsync();
+            _gbAccessMode = mode == "whitelist" ? "whitelist" : "auto";
+            _presetDevices = await Gb.GetPresetDevicesAsync();
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载国标接入配置失败：{ex.Message}");
+        }
+    }
+
+    private async Task AddPresetAsync()
+    {
+        var deviceId = _presetDeviceId?.Trim() ?? "";
+        if (string.IsNullOrEmpty(deviceId))
+        {
+            Message.Warning("请填写国标 ID");
+            return;
+        }
+        if (deviceId.Length != 20 || !deviceId.All(char.IsDigit))
+        {
+            Message.Warning("国标 ID 应为 20 位数字（如 34020000001320000001）");
+            return;
+        }
+
+        _presetSaving = true;
+        try
+        {
+            var (ok, error) = await Gb.AddPresetDeviceAsync(deviceId, _presetName, _presetPassword);
+            if (ok)
+            {
+                _presetDeviceId = "";
+                _presetName = "";
+                _presetPassword = "";
+                Message.Success("已预登记设备");
+                _presetDevices = await Gb.GetPresetDevicesAsync();
+            }
+            else
+            {
+                Message.Error(error ?? "预登记失败");
+            }
+        }
+        finally
+        {
+            _presetSaving = false;
+        }
+    }
+
+    private async Task DeletePresetAsync(GbPresetDevice preset)
+    {
+        if (_presetSaving) return;
+        _presetSaving = true;
+        try
+        {
+            await Gb.DeletePresetDeviceAsync(preset.Id);
+            Message.Success("已删除");
+            _presetDevices = await Gb.GetPresetDevicesAsync();
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"删除失败：{ex.Message}");
+        }
+        finally
+        {
+            _presetSaving = false;
+        }
+    }
+}

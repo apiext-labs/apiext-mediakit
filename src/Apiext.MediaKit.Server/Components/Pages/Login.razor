@@ -1,0 +1,52 @@
+@page "/login"
+@layout Apiext.MediaKit.Server.Components.Layout.EmptyLayout
+@inject AuthService AuthService
+@inject NavigationManager Navigation
+
+<Card class="login-card" Bordered="false">
+    <div class="login-brand">
+        <img src="logo.svg" style="width:52px;height:52px;" />
+        <p>流媒体管理平台</p>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:16px;">
+        <Input Size="@InputSize.Large" Placeholder="用户名" @bind-Value="_username"
+               OnChange="@((string v) => { _error = null; })" OnPressEnter="@(async e => await OnLogin())" />
+        <InputPassword Size="@InputSize.Large" Placeholder="密码" @bind-Value="_password"
+                       OnChange="@((string v) => { _error = null; })" OnPressEnter="@(async e => await OnLogin())" />
+        @if (_error != null)
+        {
+            <Alert Type="@AlertType.Error" ShowIcon="true" Message="@_error" />
+        }
+        <Button Type="@ButtonType.Primary" Size="@ButtonSize.Large" Block Loading="_loading" OnClick="@(async () => await OnLogin())">登录</Button>
+    </div>
+</Card>
+
+@code {
+    private string _username = "";
+    private string _password = "";
+    private bool _loading;
+    private string? _error;
+
+    private async Task OnLogin()
+    {
+        if (string.IsNullOrWhiteSpace(_username) || string.IsNullOrWhiteSpace(_password))
+        {
+            _error = "请输入用户名和密码";
+            return;
+        }
+
+        _loading = true;
+        _error = null;
+        var result = await AuthService.LoginAsync(_username, _password);
+        _loading = false;
+
+        if (result.Success)
+        {
+            Navigation.NavigateTo("/", forceLoad: true);
+        }
+        else
+        {
+            _error = result.Error;
+        }
+    }
+}

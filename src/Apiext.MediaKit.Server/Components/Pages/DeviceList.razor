@@ -1,0 +1,647 @@
+@page "/devices"
+@attribute [Authorize]
+@implements IDisposable
+@using Apiext.MediaKit.Server.Components.DeviceDetail
+@inject DeviceListService Devices
+@inject PullProxyService PullProxy
+@inject OnvifService Onvif
+@inject Gb28181Service Gb
+@inject GbSipEngine Sip
+@inject NavigationManager Nav
+@inject MessageService Message
+@inject IJSRuntime JS
+
+<Card>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
+        <Button Type="@ButtonType.Primary" Icon="plus" OnClick="OpenAdd">添加</Button>
+        <Button Icon="import" OnClick="OpenImport">导入</Button>
+        <Button Icon="export" OnClick="@(async () => await ExportAsync())">导出</Button>
+        <div style="width:280px;">
+            <Input Placeholder="请输入设备名称或地址" @bind-Value="_search" AllowClear="true" Style="width:100%;" />
+        </div>
+        <div style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+            @if (!_loading)
+            {
+                <span style="color:#718096;font-size:13px;">共 @Filtered.Count 台</span>
+            }
+            <RadioGroup @bind-Value="_viewMode" ButtonStyle="@RadioButtonStyle.Solid">
+                <Radio RadioButton="true" Value="@("table")"><Icon Type="table" /> 列表</Radio>
+                <Radio RadioButton="true" Value="@("card")"><Icon Type="appstore" /> 卡片</Radio>
+            </RadioGroup>
+            <Button Icon="reload" OnClick="@(async () => await LoadAsync())">刷新</Button>
+        </div>
+    </div>
+
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px;">
+        <Tabs @bind-ActiveKey="_protocol" Style="margin-bottom:0;">
+            <TabPane Key="all" Tab="全部"></TabPane>
+            <TabPane Key="RTSP" Tab="RTSP"></TabPane>
+            <TabPane Key="RTMP" Tab="RTMP"></TabPane>
+            <TabPane Key="HTTP-FLV" Tab="HTTP-FLV"></TabPane>
+            <TabPane Key="ONVIF" Tab="ONVIF"></TabPane>
+            <TabPane Key="GB28181" Tab="GB28181"></TabPane>
+        </Tabs>
+        <Space Style="margin-top:6px;">
+            <Text Type="@TextElementType.Secondary">状态</Text>
+            <RadioGroup @bind-Value="_status" ButtonStyle="@RadioButtonStyle.Solid">
+                <Radio RadioButton="true" Value="@("all")">全部设备</Radio>
+                <Radio RadioButton="true" Value="@("online")">在线设备</Radio>
+                <Radio RadioButton="true" Value="@("offline")">离线设备</Radio>
+            </RadioGroup>
+        </Space>
+    </div>
+
+    @if (_viewMode == "table")
+    {
+        @* 批量操作条：选择后统一开关录像 / 删除 *@
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;background:#fafbfc;border:1px solid #f0f0f0;border-radius:6px;padding:6px 12px;">
+            <Checkbox Checked="@AllSelected" Indeterminate="@PartiallySelected" OnChange="@(v => SelectAll(v))">全选</Checkbox>
+            <span style="color:#718096;font-size:13px;">已选 @_selected.Count 台</span>
+            <span style="width:1px;height:16px;background:#e8ecef;"></span>
+            <Button Size="@ButtonSize.Small" Icon="video-camera" Disabled="@(_selected.Count == 0)"
+                    OnClick="@(async () => await BatchRecordAsync(true))">开录像</Button>
+            <Button Size="@ButtonSize.Small" Icon="pause-circle" Disabled="@(_selected.Count == 0)"
+                    OnClick="@(async () => await BatchRecordAsync(false))">关录像</Button>
+            <Popconfirm Title="@($"确定删除选中的 {_selected.Count} 台设备？拉流代理会同时停止取流，不可撤销。")"
+                        OkText="删除" CancelText="取消"
+                        OnConfirm="@(async () => await BatchDeleteAsync())">
+                <Button Size="@ButtonSize.Small" Danger="true" Icon="delete" Disabled="@(_selected.Count == 0)">删除</Button>
+            </Popconfirm>
+            <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" Disabled="@(_selected.Count == 0)"
+                    OnClick="ClearSelection">清空</Button>
+            <span style="margin-left:auto;color:#9aa5b1;font-size:12px;">录像开关仅对拉流设备生效；国标设备由设备主动注册，不支持删除</span>
+        </div>
+    }
+
+    @if (_viewMode == "card")
+    {
+        <AntDesign.Row Gutter="16">
+            @foreach (var row in Filtered)
+            {
+                <AntDesign.Col Xs="24" Sm="12" Lg="6" Style="margin-bottom:16px;">
+                    <Card Bordered="true" BodyStyle="padding:0;display:flex;flex-direction:column;height:100%;"
+                          Style="height:100%;overflow:hidden;">
+                        <div class="device-cover" title="@row.Name" @onclick="() => OpenDetail(row)">
+                            @if (!string.IsNullOrEmpty(row.SnapshotUrl))
+                            {
+                                <img src="@row.SnapshotUrl" alt="@row.Name" loading="lazy"
+                                     onerror="this.onerror=null;this.src='/img/device-cover.svg';" />
+                            }
+                            else
+                            {
+                                <img src="@DefaultCover" alt="@row.Name" loading="lazy" />
+                            }
+                            @if (row.Online == false)
+                            {
+                                <span class="device-cover-badge">离线</span>
+                            }
+                            @if (row.Online == true && (!string.IsNullOrEmpty(row.SpeedText) || row.AliveSecond > 0))
+                            {
+                                <span class="device-cover-badge device-cover-badge-right">
+                                    @row.SpeedText@(string.IsNullOrEmpty(row.SpeedText) || row.AliveSecond <= 0 ? "" : " · ")@AliveText(row.AliveSecond)
+                                </span>
+                            }
+                        </div>
+                        <div style="padding:14px;display:flex;flex-direction:column;gap:10px;flex:1;">
+                            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
+                                <div style="display:flex;flex-direction:column;min-width:0;line-height:1.4;">
+                                    <span style="font-weight:500;color:#2d3748;font-size:14px;word-break:break-all;" title="@row.Name">@NameMain(row)</span>
+                                    @if (!string.IsNullOrEmpty(NameSub(row)))
+                                    {
+                                        <span style="color:#9aa5b1;font-size:12px;word-break:break-all;">@NameSub(row)</span>
+                                    }
+                                </div>
+                                @if (row.Online == null)
+                                {
+                                    <span style="color:#9aa5b1;font-size:12px;white-space:nowrap;">-</span>
+                                }
+                                else
+                                {
+                                    <Tag Color="@(row.Online.Value ? "success" : "default")" Style="margin-left:0;">@(row.Online.Value ? "在线" : "离线")</Tag>
+                                }
+                            </div>
+                            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                                <Tag Color="@ProtoColor(row.Protocol)">@row.Protocol</Tag>
+                                @if (row.PullMode == "ffmpeg")
+                                {
+                                    <Tag Color="@("orange")">兼容</Tag>
+                                }
+                                else if (row.PullMode == "native")
+                                {
+                                    <Tag>标准</Tag>
+                                }
+                            </div>
+                            <div style="margin-top:auto;">
+                                <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => OpenDetail(row))">详情</Button>
+                            </div>
+                        </div>
+                    </Card>
+                </AntDesign.Col>
+            }
+        </AntDesign.Row>
+    }
+    else
+    {
+        @if (!_loading && Filtered.Count == 0)
+        {
+            <Empty Description="@(_rows.Count == 0 ? "暂无设备，点击「添加」接入" : "没有符合条件的设备")" />
+        }
+        else
+        {
+            <Table DataSource="Filtered" Loading="_loading">
+                <AntDesign.Column Title="" Width="46" TData="string">
+                    <Checkbox Checked="@IsSelected(context)" OnChange="@(v => ToggleSelect(context, v))" />
+                </AntDesign.Column>
+                <AntDesign.Column Title="名称" TData="string">
+                    <div style="display:flex;flex-direction:column;line-height:1.5;">
+                        <span style="font-weight:500;color:#2d3748;word-break:break-all;">@NameMain(context)</span>
+                        @if (!string.IsNullOrEmpty(NameSub(context)))
+                        {
+                            <span style="color:#9aa5b1;font-size:12px;word-break:break-all;">@NameSub(context)</span>
+                        }
+                    </div>
+                </AntDesign.Column>
+                <AntDesign.Column Title="协议" Width="120" TData="string">
+                    <Tag Color="@ProtoColor(context.Protocol)">@context.Protocol</Tag>
+                </AntDesign.Column>
+                <AntDesign.Column Title="取流" Width="90" TData="string">
+                    @if (context.PullMode == "ffmpeg")
+                    {
+                        <Tooltip Title="兼容模式：视频直通、音频转 AAC，标准模式取不到流或没有声音时使用">
+                            <Tag Color="@("orange")">兼容</Tag>
+                        </Tooltip>
+                    }
+                    else if (context.PullMode == "native")
+                    {
+                        <Tooltip Title="标准模式：由流媒体服务内置拉流，资源占用低">
+                            <Tag>标准</Tag>
+                        </Tooltip>
+                    }
+                    else
+                    {
+                        <span style="color:#9aa5b1;">-</span>
+                    }
+                </AntDesign.Column>
+                <AntDesign.Column Title="地址" TData="string">
+                    <span style="font-family:var(--apiext-font-mono, monospace);font-size:12px;color:#718096;word-break:break-all;">@context.Address</span>
+                </AntDesign.Column>
+                <AntDesign.Column Title="状态" Width="90" TData="string">
+                    @if (context.Online == null)
+                    {
+                        <span style="color:#9aa5b1;">-</span>
+                    }
+                    else
+                    {
+                        <Badge Status="@(context.Online.Value ? BadgeStatus.Success : BadgeStatus.Default)"
+                               Text="@(context.Online.Value ? "在线" : "离线")" />
+                    }
+                </AntDesign.Column>
+                <ActionColumn Title="操作" Width="160">
+                    <Space Style="gap:4px;">
+                        @if (CanPlay(context))
+                        {
+                            <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" Icon="play-circle"
+                                    OnClick="@(() => Play(context))">播放</Button>
+                        }
+                        <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" Icon="profile"
+                                OnClick="@(() => OpenDetail(context))">详情</Button>
+                    </Space>
+                </ActionColumn>
+            </Table>
+        }
+    }
+
+    @if (_viewMode == "card" && !_loading && Filtered.Count == 0)
+    {
+        <Empty Description="@(_rows.Count == 0 ? "暂无设备，点击「添加」接入" : "没有符合条件的设备")" />
+    }
+</Card>
+
+<Drawer Title="@($"设备详情 - {_detailTitle}")"
+        Width="820"
+        Visible="@_detailVisible"
+        OnClose="CloseDetail">
+    @if (_detailVisible)
+    {
+        @if (_detailType == "pull")
+        {
+            <PullProxyDetail App="@_detailApp" Stream="@_detailStream"
+                             OnChanged="OnDetailChanged"
+                             OnDeleted="OnDetailDeleted" />
+        }
+        else if (_detailType == "onvif")
+        {
+            <OnvifDetail DeviceId="@_detailId"
+                         OnChanged="OnDetailChanged"
+                         OnDeleted="OnDetailDeleted" />
+        }
+        else if (_detailType == "gb")
+        {
+            <GbDetail DeviceId="@_detailDeviceId" OnChanged="OnDetailChanged" />
+        }
+    }
+</Drawer>
+
+<Modal Title="@("导入设备")"
+       Visible="@_importVisible"
+       Width="560"
+       Footer="null"
+       OnCancel="CloseImport">
+    <Alert Type="@AlertType.Info" ShowIcon="true" Style="margin-bottom:12px;"
+           Message="选择设备列表导出的 JSON 文件，批量添加拉流代理与 ONVIF 设备；GB28181 设备由设备侧主动注册，不参与导入导出。" />
+    <InputFile accept=".json,application/json" OnChange="OnImportFileSelected" />
+    @if (_importResult != null)
+    {
+        <Alert Type="@(_importResult.Value.Failed == 0 ? AlertType.Success : AlertType.Warning)"
+               ShowIcon="true" Style="margin-top:12px;"
+               Message="@($"导入完成：成功 {_importResult.Value.Added} 条，失败 {_importResult.Value.Failed} 条")" />
+        @if (_importResult.Value.Errors.Count > 0)
+        {
+            <div style="margin-top:8px;max-height:180px;overflow:auto;border:1px solid #f0f0f0;border-radius:6px;padding:8px 12px;font-size:12px;color:#718096;">
+                @foreach (var err in _importResult.Value.Errors)
+                {
+                    <div style="line-height:1.8;word-break:break-all;">· @err</div>
+                }
+            </div>
+        }
+    }
+</Modal>
+
+<AddDeviceModal @bind-Visible="_addVisible" OnAdded="@(async () => await LoadAsync())" />
+
+@code {
+    // 卡片模式默认封面（无快照或快照加载失败时回退）
+    private const string DefaultCover = "/img/device-cover.svg";
+
+    private bool _loading = true;
+    private List<UnifiedDeviceRow> _rows = new();
+    private string _search = "";
+    private string _status = "all";
+    private string _protocol = "all";
+    private string _viewMode = "table";
+
+    // 导入导出
+    private bool _importVisible;
+    private (int Added, int Failed, List<string> Errors)? _importResult;
+
+    private List<UnifiedDeviceRow> Filtered => _rows.Where(r =>
+        (_status == "all" ||
+         (_status == "online" && r.Online == true) ||
+         (_status == "offline" && r.Online == false)) &&
+        (_protocol == "all" || r.Protocol == _protocol) &&
+        (string.IsNullOrWhiteSpace(_search) ||
+         r.Name.Contains(_search, StringComparison.OrdinalIgnoreCase) ||
+         r.Address.Contains(_search, StringComparison.OrdinalIgnoreCase)))
+        .ToList();
+
+    // ---------- 多选与批量操作 ----------
+    private readonly HashSet<string> _selected = new(StringComparer.OrdinalIgnoreCase);
+    private bool _batchRunning;
+
+    private bool IsSelected(UnifiedDeviceRow r) => _selected.Contains(r.Key);
+
+    private void ToggleSelect(UnifiedDeviceRow r, bool on)
+    {
+        if (on) _selected.Add(r.Key);
+        else _selected.Remove(r.Key);
+    }
+
+    private void SelectAll(bool on)
+    {
+        if (on)
+        {
+            foreach (var r in Filtered) _selected.Add(r.Key);
+        }
+        else
+        {
+            _selected.Clear();
+        }
+    }
+
+    private void ClearSelection() => _selected.Clear();
+
+    private bool AllSelected => Filtered.Count > 0 && Filtered.All(r => _selected.Contains(r.Key));
+    private bool PartiallySelected => _selected.Count > 0 && !AllSelected;
+
+    /// <summary>拉流代理（可播放 / 可开关录像 / 可删除）。</summary>
+    private static bool IsPull(UnifiedDeviceRow r)
+        => r.Protocol is "RTSP" or "RTMP" or "HTTP-FLV";
+
+    private static bool CanPlay(UnifiedDeviceRow r)
+        => IsPull(r) && !string.IsNullOrEmpty(r.App) && !string.IsNullOrEmpty(r.Stream);
+
+    private void Play(UnifiedDeviceRow r)
+        => Nav.NavigateTo($"/player?app={Uri.EscapeDataString(r.App)}&stream={Uri.EscapeDataString(r.Stream)}");
+
+    private async Task BatchRecordAsync(bool enable)
+    {
+        if (_batchRunning) return;
+        var rows = Filtered.Where(r => _selected.Contains(r.Key)).ToList();
+        if (rows.Count == 0) return;
+
+        _batchRunning = true;
+        var ok = 0;
+        var skipped = 0;
+        var errors = new List<string>();
+        try
+        {
+            foreach (var r in rows)
+            {
+                if (!IsPull(r))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                try
+                {
+                    var (success, error) = await PullProxy.SetRecordAsync(r.App, r.Stream, enable);
+                    if (success) ok++;
+                    else errors.Add($"{r.Name}：{error}");
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"{r.Name}：{ex.Message}");
+                }
+            }
+        }
+        finally
+        {
+            _batchRunning = false;
+        }
+
+        await LoadAsync(silent: true);
+        ReportBatch(enable ? "开启录像" : "停止录像", ok, errors, skipped, "非拉流设备不支持录像开关");
+    }
+
+    private async Task BatchDeleteAsync()
+    {
+        if (_batchRunning) return;
+        var rows = Filtered.Where(r => _selected.Contains(r.Key)).ToList();
+        if (rows.Count == 0) return;
+
+        _batchRunning = true;
+        var ok = 0;
+        var skipped = 0;
+        var errors = new List<string>();
+        try
+        {
+            foreach (var r in rows)
+            {
+                try
+                {
+                    if (IsPull(r))
+                    {
+                        var (success, error) = await PullProxy.DeleteAsync(r.Vhost, r.App, r.Stream);
+                        if (success) ok++;
+                        else errors.Add($"{r.Name}：{error}");
+                    }
+                    else if (r.OnvifId.HasValue)
+                    {
+                        await Onvif.DeleteAsync(r.OnvifId.Value);
+                        ok++;
+                    }
+                    else
+                    {
+                        // GB28181 设备由设备侧主动注册，不能从平台删除
+                        skipped++;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"{r.Name}：{ex.Message}");
+                }
+            }
+        }
+        finally
+        {
+            _batchRunning = false;
+        }
+
+        _selected.Clear();
+        await LoadAsync(silent: true);
+        ReportBatch("删除", ok, errors, skipped, "国标设备由设备主动注册，不支持删除");
+    }
+
+    private void ReportBatch(string action, int ok, List<string> errors, int skipped, string skipReason)
+    {
+        var msg = $"{action}：成功 {ok} 台";
+        if (skipped > 0) msg += $"，跳过 {skipped} 台（{skipReason}）";
+        if (errors.Count > 0)
+        {
+            msg += $"，失败 {errors.Count} 台";
+            var detail = string.Join("；", errors.Take(3));
+            if (errors.Count > 3) detail += " 等";
+            Message.Warning($"{msg}：{detail}");
+        }
+        else if (ok > 0)
+        {
+            Message.Success(msg);
+        }
+        else
+        {
+            Message.Warning(msg);
+        }
+    }
+
+    /// <summary>在线时长（秒）→ 角标短文案。</summary>
+    private static string AliveText(long seconds)
+    {
+        if (seconds <= 0) return string.Empty;
+        var ts = TimeSpan.FromSeconds(seconds);
+        if (ts.TotalHours >= 1) return $"{(int)ts.TotalHours}时{ts.Minutes}分";
+        if (ts.TotalMinutes >= 1) return $"{ts.Minutes}分";
+        return $"{ts.Seconds}秒";
+    }
+
+    private PeriodicTimer? _timer;
+    private CancellationTokenSource? _cts;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+        StartAutoRefresh();
+    }
+
+    // 设备上下线由 ZLM/国标心跳驱动，页面低频轮询避免状态长期陈旧
+    private void StartAutoRefresh()
+    {
+        _cts = new CancellationTokenSource();
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
+        _ = RunAutoRefresh(_cts.Token);
+    }
+
+    private async Task RunAutoRefresh(CancellationToken ct)
+    {
+        try
+        {
+            while (await _timer!.WaitForNextTickAsync(ct))
+            {
+                await InvokeAsync(() => LoadAsync(silent: true));
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 页面销毁，正常退出
+        }
+    }
+
+    public void Dispose()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+        _timer?.Dispose();
+    }
+
+    private async Task LoadAsync(bool silent = false)
+    {
+        if (!silent) _loading = true;
+        try
+        {
+            _rows = await Devices.ListAsync();
+
+            // 设备被删除/重新加载后清理已不存在的选择项
+            var aliveKeys = _rows.Select(r => r.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            _selected.RemoveWhere(k => !aliveKeys.Contains(k));
+        }
+        catch (Exception ex)
+        {
+            if (!silent) Message.Error($"加载设备失败：{ex.Message}");
+            _rows = new();
+        }
+        finally
+        {
+            if (!silent) _loading = false;
+        }
+    }
+
+    // ---------- 导入导出 ----------
+
+    private async Task ExportAsync()
+    {
+        try
+        {
+            var json = await Devices.ExportAsync();
+            var filename = $"apiext-devices-{DateTime.Now:yyyyMMdd-HHmmss}.json";
+            await JS.InvokeVoidAsync("apiextUtil.download", filename, json, "application/json");
+            Message.Success("已导出设备列表");
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"导出失败：{ex.Message}");
+        }
+    }
+
+    private void OpenImport()
+    {
+        _importVisible = true;
+        _importResult = null;
+    }
+
+    private void CloseImport()
+    {
+        _importVisible = false;
+        _importResult = null;
+    }
+
+    private async Task OnImportFileSelected(InputFileChangeEventArgs e)
+    {
+        try
+        {
+            using var reader = new StreamReader(e.File.OpenReadStream(10 * 1024 * 1024));
+            var json = await reader.ReadToEndAsync();
+            _importResult = await Devices.ImportAsync(json);
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"导入失败：{ex.Message}");
+        }
+    }
+
+    private bool _addVisible;
+
+    private void OpenAdd() => _addVisible = true;
+
+    private bool _detailVisible;
+    private string _detailType = "";
+    private string _detailTitle = "";
+    private string _detailApp = "";
+    private string _detailStream = "";
+    private int _detailId;
+    private string _detailDeviceId = "";
+
+    private void OpenDetail(UnifiedDeviceRow row)
+    {
+        if (row.Key.StartsWith("pull:"))
+        {
+            var path = row.Key.Substring(5);
+            var idx = path.IndexOf('/');
+            if (idx > 0)
+            {
+                _detailType = "pull";
+                _detailApp = path.Substring(0, idx);
+                _detailStream = path.Substring(idx + 1);
+                _detailTitle = $"{_detailApp}/{_detailStream}";
+                _detailVisible = true;
+                return;
+            }
+        }
+        else if (row.Key.StartsWith("onvif:") && int.TryParse(row.Key.Substring(6), out var id))
+        {
+            _detailType = "onvif";
+            _detailId = id;
+            _detailTitle = row.Name;
+            _detailVisible = true;
+            return;
+        }
+        else if (row.Key.StartsWith("gb:"))
+        {
+            _detailType = "gb";
+            _detailDeviceId = row.Key.Substring(3);
+            _detailTitle = row.Name;
+            _detailVisible = true;
+            return;
+        }
+
+        Message.Warning("该设备缺少可用的详情入口（标识无法解析），请刷新后重试");
+    }
+
+    private void CloseDetail() => _detailVisible = false;
+
+    private async Task OnDetailChanged()
+    {
+        await LoadAsync();
+    }
+
+    private async Task OnDetailDeleted()
+    {
+        _detailVisible = false;
+        await LoadAsync();
+    }
+
+    /// <summary>名称主标题：拉流代理显示流 ID，其它设备显示设备名。</summary>
+    private static string NameMain(UnifiedDeviceRow r)
+    {
+        if (r.Protocol is "ONVIF" or "GB28181") return r.Name;
+        var idx = r.Name.LastIndexOf('/');
+        return idx >= 0 && idx < r.Name.Length - 1 ? r.Name[(idx + 1)..] : r.Name;
+    }
+
+    /// <summary>名称副标题：拉流代理显示应用名，其它设备显示补充信息（厂商型号 / 通道数）。</summary>
+    private static string NameSub(UnifiedDeviceRow r)
+    {
+        if (r.Protocol is "ONVIF" or "GB28181") return r.Detail;
+        var idx = r.Name.LastIndexOf('/');
+        return idx > 0 ? r.Name[..idx] : "";
+    }
+
+    private static string ProtoColor(string protocol) => protocol switch
+    {
+        "RTMP" => "purple",
+        "HTTP-FLV" => "cyan",
+        "ONVIF" => "orange",
+        "GB28181" => "green",
+        _ => "blue",
+    };
+}

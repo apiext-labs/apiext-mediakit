@@ -1,9 +1,19 @@
-**/.git
-**/.vs
-**/bin
-**/obj
-**/App_Data
+# 构建上下文排除项：构建上下文是项目根目录（compose 里 context: ..），
+# 排除本地编译产物 / 运行时数据 / 版本控制 / IDE 元数据，
+# 既减小发给 Docker daemon 的体积，也避免 COPY src/ 时把宿主机的 bin/obj 带进镜像。
+**/bin/
+**/obj/
+**/.vs/
+.vs/
+.git/
+.gitignore
+.gitattributes
+.github/
+.codebuddy/
+deploy/windows/
+APP_DATA/
 **/*.user
+**/*.suo
 **/*.db
-**/node_modules
-README.md
+**/*.db-shm
+**/*.db-wal

@@ -1,0 +1,87 @@
+@* 云台方向键盘（GB28181 通道 / ONVIF 设备共用；GbDetail、Player、OnvifDetail 复用） *@
+<div style="display:flex;justify-content:center;">
+    <div style="display:grid;grid-template-columns:repeat(3,44px);gap:4px;">
+        @if (ShowDiagonal)
+        {
+            <Button Size="@ButtonSize.Small" Disabled="@Disabled" OnClick="@(() => OnPtz.InvokeAsync(PtzCommand.UpLeft))">
+                <Icon Type="arrow-up" Style="transform:rotate(-45deg);" />
+            </Button>
+        }
+        else
+        {
+            <div></div>
+        }
+        <Button Size="@ButtonSize.Small" Disabled="@Disabled" OnClick="@(() => OnPtz.InvokeAsync(PtzCommand.Up))">
+            <Icon Type="arrow-up" />
+        </Button>
+        @if (ShowDiagonal)
+        {
+            <Button Size="@ButtonSize.Small" Disabled="@Disabled" OnClick="@(() => OnPtz.InvokeAsync(PtzCommand.UpRight))">
+                <Icon Type="arrow-up" Style="transform:rotate(45deg);" />
+            </Button>
+        }
+        else
+        {
+            <div></div>
+        }
+
+        <Button Size="@ButtonSize.Small" Disabled="@Disabled" OnClick="@(() => OnPtz.InvokeAsync(PtzCommand.Left))">
+            <Icon Type="arrow-left" />
+        </Button>
+        <Button Size="@ButtonSize.Small" Disabled="@Disabled" Danger="true" OnClick="@(() => OnPtz.InvokeAsync(PtzCommand.Stop))">
+            <Icon Type="pause" />
+        </Button>
+        <Button Size="@ButtonSize.Small" Disabled="@Disabled" OnClick="@(() => OnPtz.InvokeAsync(PtzCommand.Right))">
+            <Icon Type="arrow-right" />
+        </Button>
+
+        @if (ShowDiagonal)
+        {
+            <Button Size="@ButtonSize.Small" Disabled="@Disabled" OnClick="@(() => OnPtz.InvokeAsync(PtzCommand.DownLeft))">
+                <Icon Type="arrow-down" Style="transform:rotate(45deg);" />
+            </Button>
+        }
+        else
+        {
+            <div></div>
+        }
+        <Button Size="@ButtonSize.Small" Disabled="@Disabled" OnClick="@(() => OnPtz.InvokeAsync(PtzCommand.Down))">
+            <Icon Type="arrow-down" />
+        </Button>
+        @if (ShowDiagonal)
+        {
+            <Button Size="@ButtonSize.Small" Disabled="@Disabled" OnClick="@(() => OnPtz.InvokeAsync(PtzCommand.DownRight))">
+                <Icon Type="arrow-down" Style="transform:rotate(-45deg);" />
+            </Button>
+        }
+        else
+        {
+            <div></div>
+        }
+    </div>
+</div>
+<div style="display:flex;justify-content:center;gap:4px;flex-wrap:wrap;margin-top:8px;">
+    <Button Size="@ButtonSize.Small" Disabled="@Disabled" OnClick="@(() => OnPtz.InvokeAsync(PtzCommand.ZoomIn))">变倍 +</Button>
+    <Button Size="@ButtonSize.Small" Disabled="@Disabled" OnClick="@(() => OnPtz.InvokeAsync(PtzCommand.ZoomOut))">变倍 -</Button>
+    @if (ShowFineControls)
+    {
+        <Button Size="@ButtonSize.Small" Disabled="@Disabled" OnClick="@(() => OnPtz.InvokeAsync(PtzCommand.FocusIn))">聚焦 +</Button>
+        <Button Size="@ButtonSize.Small" Disabled="@Disabled" OnClick="@(() => OnPtz.InvokeAsync(PtzCommand.FocusOut))">聚焦 -</Button>
+        <Button Size="@ButtonSize.Small" Disabled="@Disabled" OnClick="@(() => OnPtz.InvokeAsync(PtzCommand.IrisIn))">光圈 +</Button>
+        <Button Size="@ButtonSize.Small" Disabled="@Disabled" OnClick="@(() => OnPtz.InvokeAsync(PtzCommand.IrisOut))">光圈 -</Button>
+    }
+</div>
+
+@code {
+    /// <summary>是否禁用全部按钮（如当前通道不支持云台）。</summary>
+    [Parameter] public bool Disabled { get; set; }
+
+    /// <summary>是否显示四个斜向按钮（ONVIF 不支持斜向，置 false）。</summary>
+    [Parameter] public bool ShowDiagonal { get; set; } = true;
+
+    /// <summary>是否显示聚焦/光圈按钮（ONVIF 无对应能力，置 false）。</summary>
+    [Parameter] public bool ShowFineControls { get; set; } = true;
+
+    /// <summary>点击某个云台指令。</summary>
+    [Parameter] public EventCallback<PtzCommand> OnPtz { get; set; }
+}

@@ -1,0 +1,16 @@
+@* 高级配置 → 端口清单 *@
+<Alert Type="@AlertType.Warning" ShowIcon="true" Style="margin-bottom:16px;"
+       Message="请确保以下端口已在防火墙 / 安全组放行，否则会出现无法播放、黑屏、设备注册失败等情况。" />
+<Table DataSource="_ports" Size="@TableSize.Small">
+    <AntDesign.Column Title="端口说明" @bind-Field="@context.Name" />
+    <AntDesign.Column Title="端口号" Width="220" @bind-Field="@context.Port" />
+    <AntDesign.Column Title="端口协议" Width="120" @bind-Field="@context.Protocol" />
+</Table>
+
+@code {
+    [Inject] private IConfiguration Config { get; set; } = default!;
+
+    private List<PortCatalog.PortRow> _ports = new();
+
+    protected override void OnInitialized() => _ports = PortCatalog.Build(Config);
+}

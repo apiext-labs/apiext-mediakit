@@ -1,0 +1,101 @@
+@* 高级配置 → ZLM 服务器配置（在线读写 ZLMediaKit config.ini 项） *@
+<Space Style="margin-bottom:12px;">
+    <Input Placeholder="搜索配置项" @bind-Value="_zlmSearch" Style="width:260px;" />
+    <Button Type="@ButtonType.Primary" Icon="save" Loading="_zlmSaving" OnClick="@(async () => await SaveZlmConfigAsync())">保存修改</Button>
+    <Button Icon="reload" OnClick="@(async () => await LoadZlmConfigAsync())">刷新</Button>
+</Space>
+<Table DataSource="FilteredZlmRows" Loading="_zlmLoading">
+    <AntDesign.Column Title="配置项" @bind-Field="@context.Key" />
+    <AntDesign.Column Title="值" Width="360" TData="string">
+        <Input @bind-Value="@context.Value" />
+    </AntDesign.Column>
+</Table>
+
+@code {
+    [Inject] private ZlmService Zlm { get; set; } = default!;
+    [Inject] private MessageService Message { get; set; } = default!;
+
+    private List<ZlmConfigRow> _zlmRows = new();
+    private bool _zlmLoading = true;
+    private bool _zlmSaving;
+    private string _zlmSearch = "";
+
+    private List<ZlmConfigRow> FilteredZlmRows =>
+        string.IsNullOrWhiteSpace(_zlmSearch)
+            ? _zlmRows
+            : _zlmRows.Where(r => r.Key.Contains(_zlmSearch, StringComparison.OrdinalIgnoreCase)).ToList();
+
+    protected override Task OnInitializedAsync() => LoadZlmConfigAsync();
+
+    private async Task LoadZlmConfigAsync()
+    {
+        _zlmLoading = true;
+        try
+        {
+            var resp = await Zlm.GetServerConfigAsync();
+            if (resp.Code == 0 && resp.Data is { Count: > 0 })
+            {
+                _zlmRows = resp.Data[0]
+                    .OrderBy(kv => kv.Key)
+                    .Select(kv => new ZlmConfigRow { Key = kv.Key, Value = kv.Value, Original = kv.Value })
+                    .ToList();
+            }
+            else
+            {
+                _zlmRows = new();
+                Message.Warning(resp.Msg ?? "获取配置失败");
+            }
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载配置失败：{ex.Message}");
+        }
+        finally
+        {
+            _zlmLoading = false;
+        }
+    }
+
+    private async Task SaveZlmConfigAsync()
+    {
+        var dirty = _zlmRows.Where(r => r.Changed)
+                            .ToDictionary(r => r.Key, r => r.Value);
+        if (dirty.Count == 0)
+        {
+            Message.Warning("没有需要保存的修改");
+            return;
+        }
+
+        _zlmSaving = true;
+        try
+        {
+            var result = await Zlm.SetServerConfigAsync(dirty);
+            if (result.Code == 0)
+            {
+                Message.Success($"已保存 {result.Changed} 项配置");
+                await LoadZlmConfigAsync();
+            }
+            else
+            {
+                Message.Error(result.Msg ?? "保存失败");
+            }
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"保存失败：{ex.Message}");
+        }
+        finally
+        {
+            _zlmSaving = false;
+        }
+    }
+
+    /// <summary>ZLM 配置行（值变更标记脏数据）。</summary>
+    private class ZlmConfigRow
+    {
+        public string Key { get; set; } = "";
+        public string Value { get; set; } = "";
+        public string Original { get; set; } = "";
+        public bool Changed => !string.Equals(Value, Original, StringComparison.Ordinal);
+    }
+}

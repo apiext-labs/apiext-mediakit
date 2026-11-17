@@ -1,0 +1,167 @@
+/* ===== 简约素雅主题 ===== */
+
+/* 覆盖 AntDesign 主色为低饱和钢青灰蓝 */
+html {
+    --ant-primary-color: #4a6b8a;
+    --ant-primary-color-hover: #5d7f9e;
+    --ant-primary-color-active: #3a5570;
+    --ant-primary-color-outline: rgba(74, 107, 138, 0.2);
+
+    --ant-primary-1: #edf1f5;
+    --ant-primary-2: #dbe4ec;
+    --ant-primary-3: #b9c9d8;
+    --ant-primary-4: #93a9bd;
+    --ant-primary-5: #6e88a0;
+    --ant-primary-6: #4a6b8a;
+    --ant-primary-7: #3a5570;
+
+    --ant-primary-color-deprecated-l-35: #dbe4ec;
+    --ant-primary-color-deprecated-l-20: #93a9bd;
+    --ant-primary-color-deprecated-t-20: #6e88a0;
+    --ant-primary-color-deprecated-t-50: #a5b8c9;
+    --ant-primary-color-deprecated-f-12: rgba(74, 107, 138, 0.12);
+}
+
+/* 全局：浅灰背景 + 深灰文字 */
+body {
+    background-color: #f5f6f8;
+    color: #2d3748;
+}
+
+/* 内容卡片更柔和的阴影与圆角 */
+.ant-card {
+    border-radius: 8px;
+}
+
+/* 键值表格（详情抽屉 / 添加设备国标参数共用；原先内联在 DeviceList，跨组件引用会丢样式） */
+.gb-kv-table { border:1px solid #f0f0f0; border-radius:6px; overflow:hidden; }
+.gb-kv { display:flex; padding:8px 14px; border-bottom:1px solid #f0f0f0; font-size:13px; }
+.gb-kv:last-child { border-bottom:none; }
+.gb-kv:nth-child(odd) { background:#fafbfc; }
+.gb-k { width:180px; flex-shrink:0; color:#718096; }
+.gb-v { word-break:break-all; color:#2d3748; }
+.gb-field-label { margin-bottom:4px; color:#718096; font-size:12px; }
+
+/* RTSP 规则速查 */
+.rtsp-tip-link { color:#4a6b8a; font-size:12px; cursor:pointer; margin-left:8px; }
+.rtsp-tip-link:hover { text-decoration:underline; }
+.rtsp-vendor { font-weight:500; color:#2d3748; margin-bottom:4px; font-size:13px; }
+.rtsp-item { font-family:var(--apiext-font-mono, monospace); font-size:11px; color:#718096; padding:2px 6px; cursor:pointer; word-break:break-all; line-height:1.7; border-radius:4px; }
+.rtsp-item:hover { color:#4a6b8a; background:#f0f3f7; }
+
+/* 设备列表卡片：封面图（16:9 固定比例，宽高不随快照参差） */
+.device-cover {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    overflow: hidden;
+    background: #eef1f5;
+    border-bottom: 1px solid #f0f0f0;
+    cursor: pointer;
+}
+
+.device-cover img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform 0.25s ease;
+}
+
+.device-cover:hover img {
+    transform: scale(1.03);
+}
+
+.device-cover-badge {
+    position: absolute;
+    left: 8px;
+    top: 8px;
+    padding: 0 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    line-height: 18px;
+    color: #fff;
+    background: rgba(45, 55, 72, 0.6);
+}
+
+.device-cover-badge-right {
+    left: auto;
+    right: 8px;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 首页快速入口：整卡可点，hover 抬升 */
+.quick-tile {
+    display: flex;
+    align-items: stretch;
+    gap: 12px;
+    height: 100%;
+    padding: 16px;
+    border: 1px solid #f0f0f0;
+    border-radius: 8px;
+    background: #fff;
+    cursor: pointer;
+    transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.quick-tile:hover {
+    transform: translateY(-2px);
+    border-color: #dbe4ec;
+    box-shadow: 0 4px 14px rgba(45, 55, 72, 0.08);
+}
+
+.quick-tile-icon {
+    width: 40px;
+    height: 40px;
+    flex-shrink: 0;
+    align-self: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    background: #edf1f5;
+    color: #4a6b8a;
+    font-size: 20px;
+}
+
+/* 文字区纵向 flex：描述占满剩余高度，底部统计行在四张卡片间保持同一基线（描述换行也不参差） */
+.quick-tile-body { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.quick-tile-title { font-weight: 500; color: #2d3748; font-size: 14px; }
+.quick-tile-desc { margin-top: 4px; color: #718096; font-size: 12px; line-height: 1.5; flex: 1; }
+.quick-tile-meta { margin-top: 6px; color: #9aa5b1; font-size: 12px; }
+
+/* 录像回放：快照缩略图（离线显示默认封面，在线可点开大图） */
+.snap-thumb {
+    width: 96px;
+    height: 54px;
+    object-fit: cover;
+    border-radius: 6px;
+    border: 1px solid #f0f0f0;
+    background: #f5f6f8;
+    cursor: zoom-in;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.snap-thumb:hover {
+    transform: scale(1.04);
+    box-shadow: 0 2px 8px rgba(45, 55, 72, 0.14);
+}
+
+.snap-thumb-off {
+    cursor: default;
+    opacity: 0.8;
+}
+
+.snap-thumb-off:hover {
+    transform: none;
+    box-shadow: none;
+}
+
+/* 视频调阅：分屏画面上的编码格式角标（H.264 / H.265） */
+.pslot-codec {
+    background: rgba(255, 255, 255, 0.18);
+    border-radius: 3px;
+    padding: 0 4px;
+    font-size: 11px;
+    line-height: 16px;
+    flex-shrink: 0;
+}

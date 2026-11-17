@@ -1,0 +1,86 @@
+@namespace Apiext.MediaKit.Server.Components.Layout
+@inherits LayoutComponentBase
+@inject AuthService AuthService
+@inject NavigationManager Navigation
+
+<AntDesign.ProLayout.BasicLayout
+    Logo="@("/logo.svg")"
+    MenuData="_menuData"
+    MenuAccordion
+    @bind-Collapsed="collapsed">
+    <HeaderContentRender>
+        <Icon Class="action" Type="@(collapsed ? "menu-unfold" : "menu-fold")" OnClick="Toggle" />
+    </HeaderContentRender>
+    <RightContentRender>
+        <Space Style="gap:12px;">
+            @if (!string.IsNullOrEmpty(_userName))
+            {
+                <Space Style="gap:6px;">
+                    <Avatar Icon="user" />
+                    <Text>@_userName</Text>
+                </Space>
+            }
+            <Button Type="@ButtonType.Text" Loading="@_loggingOut" OnClick="@(async () => await Logout())">退出登录</Button>
+        </Space>
+    </RightContentRender>
+    <ChildContent>
+        @Body
+    </ChildContent>
+    <FooterRender>
+        <div style="text-align:center;padding:16px;">NVR · 流媒体管理平台</div>
+    </FooterRender>
+</AntDesign.ProLayout.BasicLayout>
+
+@code {
+    private bool collapsed;
+    private bool _loggingOut;
+    private string _userName = "";
+    private MenuDataItem[] _menuData = Array.Empty<MenuDataItem>();
+
+    [CascadingParameter]
+    private Task<AuthenticationState>? AuthState { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (AuthState != null)
+        {
+            var state = await AuthState;
+            _userName = state.User.Identity?.Name ?? "";
+        }
+
+        _menuData = new[]
+        {
+            new MenuDataItem { Path = "/", Name = "首页", Key = "home", Icon = "dashboard" },
+            new MenuDataItem { Path = "/devices", Name = "设备列表", Key = "devices", Icon = "video-camera" },
+            new MenuDataItem { Path = "/player", Name = "视频调阅", Key = "player", Icon = "play-circle" },
+            new MenuDataItem { Path = "/playback", Name = "录像回放", Key = "playback", Icon = "cloud-upload" },
+            new MenuDataItem
+            {
+                Name = "系统管理", Key = "system", Icon = "setting",
+                Children = new[]
+                {
+                    new MenuDataItem { Path = "/monitor", Name = "服务器监控", Key = "monitor", Icon = "line-chart" },
+                    new MenuDataItem { Path = "/alarms", Name = "报警中心", Key = "alarms", Icon = "alert" },
+                    new MenuDataItem { Path = "/advanced", Name = "高级配置", Key = "advanced", Icon = "appstore" },
+                },
+            },
+        };
+    }
+
+    private void Toggle() => collapsed = !collapsed;
+
+    private async Task Logout()
+    {
+        if (_loggingOut) return;
+        _loggingOut = true;
+        try
+        {
+            await AuthService.LogoutAsync();
+            Navigation.NavigateTo("/login", forceLoad: true);
+        }
+        finally
+        {
+            _loggingOut = false;
+        }
+    }
+}

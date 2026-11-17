@@ -1,0 +1,15 @@
+# 发布输出与第三方二进制不入库（体积大 / 受许可约束）
+app/
+zlm/
+ffmpeg/
+nssm.exe
+
+# 打包与临时产物
+*.zip
+*.7z
+*.tar.gz
+*.log
+install-report.txt
+
+# NSIS 安装包（构建产物，含旧名称/自定义版本）
+*-Setup-*.exe

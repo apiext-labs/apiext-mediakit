@@ -1,0 +1,512 @@
+@page "/"
+@attribute [Authorize]
+@implements IDisposable
+@inject ZlmService Zlm
+@inject DeviceListService Devices
+@inject ILogger<Home> Logger
+@inject IJSRuntime JS
+@inject NavigationManager Nav
+@inject GbSipEngine Sip
+@inject IConfiguration Config
+@inject AppSettingsService Settings
+@inject AccountService Accounts
+@inject MessageService Message
+
+<Card Title="快速接入" Style="margin-bottom:16px;">
+    <AntDesign.Row Gutter="16">
+        <AntDesign.Col Xs="24" Sm="12" Lg="6" Style="margin-bottom:8px;">
+            <div class="quick-tile" @onclick="@(() => Nav.NavigateTo("/devices"))">
+                <div class="quick-tile-icon"><Icon Type="video-camera" /></div>
+                <div class="quick-tile-body">
+                    <div class="quick-tile-title">添加视频源</div>
+                    <div class="quick-tile-desc">RTSP / RTMP / HTTP-FLV 接入摄像机、NVR</div>
+                    <div class="quick-tile-meta">已接入 @_pullCount 路 · 在线 @_pullOnline 路</div>
+                </div>
+                <Icon Type="right" Style="color:#c7d0da;font-size:12px;flex-shrink:0;align-self:center;" />
+            </div>
+        </AntDesign.Col>
+        <AntDesign.Col Xs="24" Sm="12" Lg="6" Style="margin-bottom:8px;">
+            <div class="quick-tile" @onclick="@(() => Nav.NavigateTo("/devices"))">
+                <div class="quick-tile-icon"><Icon Type="cluster" /></div>
+                <div class="quick-tile-body">
+                    <div class="quick-tile-title">接入国标设备</div>
+                    <div class="quick-tile-desc">GB28181 设备主动注册 / 白名单鉴权</div>
+                    <div class="quick-tile-meta">在线 @_gbOnline 台 · 共 @_gbTotal 台</div>
+                </div>
+                <Icon Type="right" Style="color:#c7d0da;font-size:12px;flex-shrink:0;align-self:center;" />
+            </div>
+        </AntDesign.Col>
+        <AntDesign.Col Xs="24" Sm="12" Lg="6" Style="margin-bottom:8px;">
+            <div class="quick-tile" @onclick="@(() => Nav.NavigateTo("/player"))">
+                <div class="quick-tile-icon"><Icon Type="play-circle" /></div>
+                <div class="quick-tile-body">
+                    <div class="quick-tile-title">视频调阅</div>
+                    <div class="quick-tile-desc">实时预览、多画面分屏、云台控制</div>
+                    <div class="quick-tile-meta">在线流 @_streamRows.Count 路</div>
+                </div>
+                <Icon Type="right" Style="color:#c7d0da;font-size:12px;flex-shrink:0;align-self:center;" />
+            </div>
+        </AntDesign.Col>
+        <AntDesign.Col Xs="24" Sm="12" Lg="6" Style="margin-bottom:8px;">
+            <div class="quick-tile" @onclick="@(() => Nav.NavigateTo("/playback"))">
+                <div class="quick-tile-icon"><Icon Type="history" /></div>
+                <div class="quick-tile-body">
+                    <div class="quick-tile-title">录像回放</div>
+                    <div class="quick-tile-desc">本地录像、卡录像、录像计划</div>
+                    <div class="quick-tile-meta">录像中 @_recordingCount 路</div>
+                </div>
+                <Icon Type="right" Style="color:#c7d0da;font-size:12px;flex-shrink:0;align-self:center;" />
+            </div>
+        </AntDesign.Col>
+    </AntDesign.Row>
+</Card>
+
+<Card Style="margin-bottom:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <div style="display:flex;align-items:baseline;gap:8px;">
+            <Text Strong="true">运行概览</Text>
+            <span style="color:#9aa5b1;font-size:12px;">设备与流媒体服务实时统计 · 每 30 秒自动刷新</span>
+        </div>
+        <Space>
+            @if (_lastUpdated != null)
+            {
+                <span style="color:#9aa5b1;font-size:12px;">更新于 @(_lastUpdated.Value.ToString("HH:mm:ss"))</span>
+            }
+            <Button Size="@ButtonSize.Small" Icon="reload" Disabled="@(_loading || _busy)"
+                    OnClick="@(async () => await LoadAsync())">刷新</Button>
+        </Space>
+    </div>
+    @if (_loading)
+    {
+        <Spin />
+    }
+    else
+    {
+        @if (_error != null)
+        {
+            <Alert Type="@AlertType.Warning" ShowIcon="true" Style="margin-bottom:16px;"
+                   Message="无法连接流媒体服务，流媒体相关指标可能为 0" Description="@_error" />
+        }
+        <AntDesign.Row Gutter="16">
+            <AntDesign.Col Xs="12" Sm="8" Lg="4">
+                <Statistic Title="@($"在线设备 / {_deviceRows.Count}")" Value="@((double)_onlineDeviceCount)" />
+            </AntDesign.Col>
+            <AntDesign.Col Xs="12" Sm="8" Lg="4">
+                <Statistic Title="在线流" Value="@((double)_streamRows.Count)" />
+            </AntDesign.Col>
+            <AntDesign.Col Xs="12" Sm="8" Lg="4">
+                <Statistic Title="输入流" Value="@((double)_statistic.MediaSource)" />
+            </AntDesign.Col>
+            <AntDesign.Col Xs="12" Sm="8" Lg="4">
+                <Statistic Title="输出流" Value="@((double)_statistic.MultiMediaSourceMuxer)" />
+            </AntDesign.Col>
+            <AntDesign.Col Xs="12" Sm="8" Lg="4">
+                <Statistic Title="TCP 连接" Value="@((double)_statistic.TcpSession)" />
+            </AntDesign.Col>
+            <AntDesign.Col Xs="12" Sm="8" Lg="4">
+                <Statistic Title="UDP 连接" Value="@((double)_statistic.UdpSession)" />
+            </AntDesign.Col>
+        </AntDesign.Row>
+    }
+</Card>
+
+<Card>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+        <div style="display:flex;align-items:baseline;gap:8px;">
+            <Text Strong="true">在线流</Text>
+            <span style="color:#9aa5b1;font-size:12px;">正在直播的流，点「播放」直接进入视频调阅</span>
+        </div>
+        <span style="color:#718096;font-size:13px;">共 @_streamRows.Count 路</span>
+    </div>
+    @if (_loading)
+    {
+        <div style="text-align:center;padding:24px;"><Spin /></div>
+    }
+    else if (_streamRows.Count == 0)
+    {
+        <Empty Description="@(_error != null ? "流媒体服务未连接，无法获取在线流" : "暂无在线流，接入设备并播放后自动出现")" />
+    }
+    else
+    {
+        <Table DataSource="_visibleStreams">
+            <AntDesign.Column Title="流" TData="string">
+                <div style="display:flex;flex-direction:column;line-height:1.5;">
+                    <span style="font-weight:500;color:#2d3748;word-break:break-all;">@context.Stream</span>
+                    <span style="color:#9aa5b1;font-size:12px;word-break:break-all;">@context.App</span>
+                </div>
+            </AntDesign.Column>
+            <AntDesign.Column Title="封装协议" Width="180" TData="string">
+                <span style="color:#718096;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;"
+                      title="@context.SchemasText">@context.SchemasText</span>
+            </AntDesign.Column>
+            <AntDesign.Column Title="来源" Width="110" TData="string">
+                <span style="color:#718096;font-size:12px;">@context.OriginText</span>
+            </AntDesign.Column>
+            <AntDesign.Column Title="观众数" Width="90" TData="string">
+                <span style="@(context.Readers > 0 ? "color:#2d3748;" : "color:#9aa5b1;")">@context.Readers</span>
+            </AntDesign.Column>
+            <AntDesign.Column Title="码率" Width="110" TData="string">
+                <span style="color:#718096;font-size:12px;font-variant-numeric:tabular-nums;">@FormatSpeed(context.BytesSpeed)</span>
+            </AntDesign.Column>
+            <ActionColumn Title="操作" Width="100">
+                <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" Icon="play-circle"
+                        OnClick="@(() => PlayStream(context))">播放</Button>
+            </ActionColumn>
+        </Table>
+        @if (_streamRows.Count > _visibleStreams.Count)
+        {
+            <div style="margin-top:8px;color:#9aa5b1;font-size:12px;">
+                仅显示前 @_visibleStreams.Count 路，完整设备列表见「设备列表」，按需取流见「视频调阅」。
+            </div>
+        }
+    }
+</Card>
+
+<Modal Title="@("初始化向导")"
+       Visible="@_wizardVisible"
+       Closable="false"
+       MaskClosable="false"
+       Keyboard="false"
+       Footer="null"
+       Width="640">
+    <Steps Current="@_wizardStep" Size="@StepsSize.Small" Style="margin-bottom:20px;">
+        <Step Title="属性配置" />
+        <Step Title="开放端口" />
+        <Step Title="重置账号" />
+    </Steps>
+
+    @if (_wizardStep == 0)
+    {
+        <Alert Type="@AlertType.Info" ShowIcon="true" Style="margin-bottom:16px;"
+               Message="请确认平台对外地址：设备注册、点播收流、上级级联访问本平台时均使用以下参数。" />
+        <div style="border:1px solid #f0f0f0;border-radius:6px;overflow:hidden;margin-bottom:12px;">
+            <div style="display:flex;padding:8px 14px;border-bottom:1px solid #f0f0f0;">
+                <div style="width:170px;color:#718096;">本机 IP</div>
+                <div>@Sip.LocalIp</div>
+            </div>
+            <div style="display:flex;padding:8px 14px;border-bottom:1px solid #f0f0f0;">
+                <div style="width:170px;color:#718096;">媒体 IP（设备推流目标）</div>
+                <div>@Sip.MediaIp</div>
+            </div>
+            <div style="display:flex;padding:8px 14px;border-bottom:1px solid #f0f0f0;">
+                <div style="width:170px;color:#718096;">SIP 编码</div>
+                <div>@Sip.SipId</div>
+            </div>
+            <div style="display:flex;padding:8px 14px;border-bottom:1px solid #f0f0f0;">
+                <div style="width:170px;color:#718096;">SIP 域 / 端口</div>
+                <div>@Sip.SipDomain / @Sip.SipPort (UDP)</div>
+            </div>
+            <div style="display:flex;padding:8px 14px;">
+                <div style="width:170px;color:#718096;">流媒体服务地址</div>
+                <div>@Zlm.PlayBaseUrl</div>
+            </div>
+        </div>
+        <div style="color:#718096;font-size:12px;">
+            设备与平台不在同一网段时，请把上面的「媒体 IP」改成设备能访问到的地址（改配置后需重启生效）。
+        </div>
+    }
+    else if (_wizardStep == 1)
+    {
+        <Alert Type="@AlertType.Warning" ShowIcon="true" Style="margin-bottom:16px;"
+               Message="请确保以下端口已在防火墙 / 安全组放行，否则会出现无法播放、黑屏、设备注册失败等情况。" />
+        <Table DataSource="_wizardPorts" Size="@TableSize.Small">
+            <AntDesign.Column Title="端口说明" @bind-Field="@context.Name" />
+            <AntDesign.Column Title="端口号" Width="220" @bind-Field="@context.Port" />
+            <AntDesign.Column Title="端口协议" Width="120" @bind-Field="@context.Protocol" />
+        </Table>
+    }
+    else
+    {
+        <div style="display:flex;flex-direction:column;gap:16px;">
+            <div>
+                <div style="margin-bottom:4px;">
+                    <Text Strong="true">新密码</Text>
+                    <Text Type="@TextElementType.Secondary">（建议立即修改默认密码 admin123）</Text>
+                </div>
+                <InputPassword Placeholder="请输入新密码（至少 6 位）" @bind-Value="_wizardPass1" />
+            </div>
+            <div>
+                <div style="margin-bottom:4px;">
+                    <Text Strong="true">确认新密码</Text>
+                </div>
+                <InputPassword Placeholder="请再次输入新密码" @bind-Value="_wizardPass2" />
+            </div>
+            <Space>
+                <Button Size="@ButtonSize.Small" OnClick="GenRandomPassword">随机密码</Button>
+                <Text Type="@TextElementType.Secondary">生成 12 位随机密码并自动填入</Text>
+            </Space>
+        </div>
+    }
+
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:24px;">
+        @if (_wizardStep > 0)
+        {
+            <Button OnClick="@(async () => _wizardStep--)">上一步</Button>
+        }
+        @if (_wizardStep < 2)
+        {
+            <Button Type="@ButtonType.Primary" OnClick="@(() => _wizardStep++)">下一步</Button>
+        }
+        else
+        {
+            <Popconfirm Title="保留默认密码 admin123 存在安全风险，确定跳过？" OkText="跳过" CancelText="取消"
+                        OnConfirm="@(async () => await FinishWizardAsync(true))">
+                <Button Loading="@_wizardSaving">跳过（保留默认密码）</Button>
+            </Popconfirm>
+            <Button Type="@ButtonType.Primary" Loading="@_wizardSaving" OnClick="@(async () => await FinishWizardAsync(false))">完成</Button>
+        }
+    </div>
+</Modal>
+
+@code {
+    /// <summary>首页在线流：同一路流的多种封装（rtmp/hls/ts/fmp4）合并成一行。</summary>
+    private class StreamRow
+    {
+        public string App { get; set; } = "";
+        public string Stream { get; set; } = "";
+        public List<string> Schemas { get; set; } = new();
+        public string OriginText { get; set; } = "";
+        public int Readers { get; set; }
+        public long BytesSpeed { get; set; }
+
+        /// <summary>协议一行展示（如 FMP4 · HLS · RTMP · TS），窄屏不换行由 CSS 省略。</summary>
+        public string SchemasText => string.Join(" · ", Schemas.Select(s => s.ToUpperInvariant()));
+    }
+
+    private const int MaxStreamRows = 8;
+
+    private bool _loading = true;
+    private string? _error;
+    private StatisticData _statistic = new();
+    private List<MediaItem> _streams = new();
+    private List<StreamRow> _streamRows = new();
+    private List<UnifiedDeviceRow> _deviceRows = new();
+
+    private List<StreamRow> _visibleStreams => _streamRows.Take(MaxStreamRows).ToList();
+
+    private int _pullCount => _deviceRows.Count(r => r.Protocol is "RTSP" or "RTMP" or "HTTP-FLV");
+    private int _pullOnline => _deviceRows.Count(r => r.Protocol is "RTSP" or "RTMP" or "HTTP-FLV" && r.Online == true);
+    private int _gbTotal => _deviceRows.Count(r => r.Protocol == "GB28181");
+    private int _gbOnline => _deviceRows.Count(r => r.Protocol == "GB28181" && r.Online == true);
+    private int _onlineDeviceCount => _deviceRows.Count(r => r.Online == true);
+    private int _recordingCount => _deviceRows.Count(r => r.IsRecording);
+
+    // 初始化向导
+    private bool _wizardVisible;
+    private int _wizardStep;
+    private bool _wizardSaving;
+    private List<PortCatalog.PortRow> _wizardPorts = new();
+    private string _wizardPass1 = "";
+    private string _wizardPass2 = "";
+    private string _userName = "";
+
+    [CascadingParameter]
+    private Task<AuthenticationState>? AuthState { get; set; }
+
+    // 30 秒静默刷新（标签页隐藏时跳过，避免后台空转）
+    private PeriodicTimer? _timer;
+    private CancellationTokenSource? _cts;
+    private bool _busy;
+    private DateTime? _lastUpdated;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (AuthState != null)
+        {
+            var state = await AuthState;
+            _userName = state.User.Identity?.Name ?? "";
+        }
+
+        _wizardPorts = PortCatalog.Build(Config);
+        if (!await Settings.GetBoolAsync("wizard.completed"))
+        {
+            _wizardVisible = true;
+        }
+
+        await LoadAsync();
+        StartAutoRefresh();
+    }
+
+    private void StartAutoRefresh()
+    {
+        _cts = new CancellationTokenSource();
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
+        _ = RunAutoRefresh(_cts.Token);
+    }
+
+    private async Task RunAutoRefresh(CancellationToken ct)
+    {
+        try
+        {
+            while (await _timer!.WaitForNextTickAsync(ct))
+            {
+                // 页面在后台时跳过，回来再刷新
+                string visibility;
+                try
+                {
+                    visibility = await JS.InvokeAsync<string>("eval", "document.visibilityState");
+                }
+                catch
+                {
+                    visibility = "visible";
+                }
+                if (visibility == "hidden") continue;
+
+                await InvokeAsync(() => LoadAsync(silent: true));
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 页面销毁，正常退出
+        }
+        catch (Exception ex)
+        {
+            // circuit 断开等情况：记录后停止轮询，避免未观察异常
+            Logger.LogWarning(ex, "[Home] 自动刷新已停止");
+        }
+    }
+
+    public void Dispose()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+        _timer?.Dispose();
+    }
+
+    /// <summary>加载概览数据；silent=true 用于轮询（不闪 loading、不弹错误）。</summary>
+    private async Task LoadAsync(bool silent = false)
+    {
+        // 手动刷新与轮询互斥，避免重复请求
+        if (_busy) return;
+        _busy = true;
+        if (!silent) _loading = true;
+        _error = null;
+        try
+        {
+            var stat = await Zlm.GetStatisticAsync();
+            if (stat.Code == 0 && stat.Data != null)
+            {
+                _statistic = stat.Data;
+            }
+            else
+            {
+                _error = stat.Msg ?? "ZLM 返回错误";
+            }
+
+            var media = await Zlm.GetMediaListAsync();
+            if (media.Code == 0 && media.Data != null)
+            {
+                _streams = media.Data;
+            }
+            AggregateStreams();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+            _streams = new();
+            _streamRows = new();
+        }
+
+        // 设备统计独立获取：ZLM 不可达时设备数量仍能展示
+        try
+        {
+            _deviceRows = await Devices.ListAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "[Home] 设备统计加载失败");
+            _deviceRows = new();
+        }
+
+        _loading = false;
+        _busy = false;
+        _lastUpdated = DateTime.Now;
+    }
+
+    /// <summary>把 ZLM 在线流按 app/stream 去重：同一路流的 rtmp/hls/ts/fmp4 合成一行。</summary>
+    private void AggregateStreams()
+    {
+        _streamRows = _streams
+            .GroupBy(m => $"{m.App}/{m.Stream}", StringComparer.OrdinalIgnoreCase)
+            .Select(g => new StreamRow
+            {
+                App = g.First().App ?? "",
+                Stream = g.First().Stream ?? "",
+                Schemas = g.Select(m => m.Schema ?? "")
+                           .Where(s => s.Length > 0)
+                           .Distinct(StringComparer.OrdinalIgnoreCase)
+                           .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
+                           .ToList(),
+                OriginText = string.Join(" / ", g.Select(m => OriginLabel(m.OriginTypeStr))
+                                                 .Where(s => s.Length > 0)
+                                                 .Distinct()),
+                Readers = g.Max(m => m.TotalReaderCount),
+                BytesSpeed = g.Max(m => m.BytesSpeed),
+            })
+            .OrderBy(r => r.App, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(r => r.Stream, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>ZLM 的 originTypeStr → 中文来源（pull / rtmp_push 等直接显示英文对运维不友好）。</summary>
+    private static string OriginLabel(string? origin) => origin switch
+    {
+        null or "" => "",
+        "pull" => "拉流",
+        "ffmpeg" => "拉流(ffmpeg)",
+        "rtmp_push" => "RTMP 推流",
+        "rtsp_push" => "RTSP 推流",
+        "rtp_push" => "国标推流",
+        "push" => "推流",
+        _ => origin,
+    };
+
+    private void PlayStream(StreamRow row)
+        => Nav.NavigateTo($"/player?app={Uri.EscapeDataString(row.App)}&stream={Uri.EscapeDataString(row.Stream)}");
+
+    private static string FormatSpeed(long bytesPerSecond)
+    {
+        if (bytesPerSecond <= 0) return "-";
+        if (bytesPerSecond >= 1024 * 1024) return $"{bytesPerSecond / 1024.0 / 1024.0:F2} MB/s";
+        return $"{bytesPerSecond / 1024.0:F1} KB/s";
+    }
+
+    private void GenRandomPassword()
+    {
+        const string chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+        var pwd = new string(Enumerable.Range(0, 12).Select(_ => chars[Random.Shared.Next(chars.Length)]).ToArray());
+        _wizardPass1 = pwd;
+        _wizardPass2 = pwd;
+    }
+
+    private async Task FinishWizardAsync(bool skipPassword)
+    {
+        if (!skipPassword)
+        {
+            if (string.IsNullOrWhiteSpace(_wizardPass1) || _wizardPass1.Length < 6)
+            {
+                Message.Warning("新密码至少 6 位，或点击「跳过」保留默认密码");
+                return;
+            }
+            if (_wizardPass1 != _wizardPass2)
+            {
+                Message.Warning("两次输入的密码不一致");
+                return;
+            }
+
+            _wizardSaving = true;
+            var (ok, error) = await Accounts.ChangePasswordAsync(
+                string.IsNullOrEmpty(_userName) ? "admin" : _userName, _wizardPass1);
+            _wizardSaving = false;
+            if (!ok)
+            {
+                Message.Error(error ?? "修改密码失败");
+                return;
+            }
+            Message.Success("密码已更新，下次登录请使用新密码");
+        }
+
+        await Settings.SetAsync("wizard.completed", "true");
+        _wizardVisible = false;
+    }
+}

@@ -1,0 +1,35 @@
+# 独立启动 ZLMediaKit（不含应用容器）
+# 用途：
+#   1. 本地开发调试（应用跑在宿主，ZLM 跑在 Docker）
+#   2. 单独部署流媒体服务（应用与本容器分离）
+# 用法：
+#   docker compose -f docker-compose.zlm.yml up -d
+#   docker compose -f docker-compose.zlm.yml logs -f
+#   docker compose -f docker-compose.zlm.yml down
+#
+# 端口与 deploy/docker/config.ini 中配置的一致，全部 1:1 映射（SDP/WebRTC 里写死的就是这些端口）。
+# 使用的是「非常用端口」，避免与宿主机其他服务冲突。
+services:
+  zlm:
+    image: zlmediakit/zlmediakit:master
+    container_name: apiext-mediakit-zlm
+    restart: unless-stopped
+    ports:
+      - "28180:28180"                  # HTTP：HTTP-FLV / HLS / TS / fMP4 / WebRTC 信令
+      - "28554:28554"                  # RTSP
+      - "28335:28335"                  # RTMP 推流/拉流
+      - "21000:21000"                  # RTP over TCP
+      - "21000:21000/udp"              # RTP over UDP
+      - "28000:28000/udp"              # WebRTC ICE（UDP）
+      - "28000:28000/tcp"              # WebRTC ICE（TCP）
+      - "29000:29000/udp"              # SRT
+      - "24000-24500:24000-24500/udp"  # GB28181 点播收流（RTP over UDP）
+      - "24000-24500:24000-24500"      # GB28181 点播收流（RTP over TCP）
+    volumes:
+      - ./config.ini:/opt/media/conf/config.ini   # 配置覆盖（api.secret / 端口）
+      - zlm-record:/opt/media/bin/www/record      # 录像持久化
+    # 可选：排查问题时挂出日志目录
+    # - ./log:/opt/media/bin/log
+
+volumes:
+  zlm-record:

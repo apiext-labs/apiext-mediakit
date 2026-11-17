@@ -1,0 +1,298 @@
+@* 高级配置 → 录像备份（SMB / NFS / S3 备份目标 CRUD + 立即备份） *@
+<Alert Type="@AlertType.Info" ShowIcon="true" Style="margin-bottom:12px;"
+       Message="@($"录像源目录：{Backup.DefaultSourcePath}。SMB / NFS 通过宿主机挂载目录备份；S3 支持原生直传（AWS S3 / MinIO / OSS / COS 等兼容端点）。开启后按周期自动增量备份。")" />
+
+<Space Style="margin-bottom:12px;">
+    <Button Type="@ButtonType.Primary" Icon="plus" OnClick="OpenBackupAdd">添加备份目标</Button>
+    <Button Icon="cloud-upload" OnClick="@(async () => await SyncAllBackupsAsync())">立即备份</Button>
+    <Button Icon="reload" OnClick="@(async () => await LoadBackupsAsync())">刷新</Button>
+</Space>
+
+<Table DataSource="_backups" Loading="_backupsLoading" Size="@TableSize.Small">
+    <AntDesign.Column Title="名称" @bind-Field="@context.Name" />
+    <AntDesign.Column Title="类型" Width="90" TData="string">
+        <Tag Color="@BackupTypeColor(context.Type)">@BackupTypeText(context.Type)</Tag>
+    </AntDesign.Column>
+    <AntDesign.Column Title="备份目标" TData="string">
+        @if (context.Type == "s3")
+        {
+            <span style="word-break:break-all;">@($"{context.Bucket}/{context.Prefix}")</span>
+        }
+        else
+        {
+            <span style="word-break:break-all;">@context.TargetPath</span>
+        }
+    </AntDesign.Column>
+    <AntDesign.Column Title="启用" Width="80" TData="string">
+        <Switch Checked="@context.Enabled" OnChange="@(async (bool v) => await ToggleBackupAsync(context, v))" />
+    </AntDesign.Column>
+    <AntDesign.Column Title="最近备份" Width="160" TData="string">
+        @FormatBackupTime(context.LastSyncAt)
+    </AntDesign.Column>
+    <AntDesign.Column Title="结果" TData="string">
+        <span style="color:@(context.LastResult.StartsWith("已同步") ? "#52c41a" : "#cf1322");">@context.LastResult</span>
+    </AntDesign.Column>
+    <ActionColumn Title="操作" Width="160">
+        <Space Style="gap:4px;">
+            <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => SyncBackupAsync(context))">备份</Button>
+            <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => OpenBackupEdit(context))">编辑</Button>
+            <Popconfirm Title="确定删除该备份目标？" OkText="删除" CancelText="取消" OnConfirm="@(() => DeleteBackupAsync(context))">
+                <Button Type="@ButtonType.Link" Danger="true" Size="@ButtonSize.Small">删除</Button>
+            </Popconfirm>
+        </Space>
+    </ActionColumn>
+</Table>
+
+@if (_backups.Count == 0 && !_backupsLoading)
+{
+    <div style="text-align:center;padding:24px;color:#718096;">暂无备份目标，点击「添加备份目标」配置</div>
+}
+
+<Modal Title="@(_editingBackupId == null ? "添加备份目标" : "编辑备份目标")"
+       Visible="@_backupFormVisible"
+       OkText="@("保存")"
+       CancelText="@("取消")"
+       ConfirmLoading="@_backupSaveLoading"
+       OnOk="@(async () => await SubmitBackupForm())"
+       OnCancel="CloseBackupForm">
+    <div style="display:flex;flex-direction:column;gap:16px;">
+        <div>
+            <div style="margin-bottom:6px;"><Text Strong="true">名称</Text></div>
+            <Input Placeholder="如 异地NAS备份" @bind-Value="_backupName" />
+        </div>
+        <div>
+            <div style="margin-bottom:6px;"><Text Strong="true">备份类型</Text></div>
+            <RadioGroup @bind-Value="_backupType" ButtonStyle="@RadioButtonStyle.Solid">
+                <Radio RadioButton="true" Value="@("smb")">SMB</Radio>
+                <Radio RadioButton="true" Value="@("nfs")">NFS</Radio>
+                <Radio RadioButton="true" Value="@("s3")">S3</Radio>
+            </RadioGroup>
+        </div>
+        <div>
+            <div style="margin-bottom:6px;"><Text Strong="true">本地录像源目录</Text></div>
+            <Input Placeholder="@($"默认 {Backup.DefaultSourcePath}（留空则用默认）")" @bind-Value="_backupSource" />
+        </div>
+
+        @if (_backupType == "s3")
+        {
+            <div>
+                <div style="margin-bottom:6px;"><Text Strong="true">S3 端点</Text><span style="color:#ff4d4f;"> *</span></div>
+                <Input Placeholder="如 http://minio:9000 或 https://s3.region.amazonaws.com" @bind-Value="_backupEndpoint" />
+            </div>
+            <div>
+                <div style="margin-bottom:6px;"><Text Strong="true">区域 (Region)</Text></div>
+                <Input Placeholder="如 us-east-1（MinIO/自建可留空）" @bind-Value="_backupRegion" />
+            </div>
+            <Space Style="flex-wrap:wrap;">
+                <div style="width:220px;">
+                    <div style="margin-bottom:6px;"><Text Strong="true">AccessKey</Text><span style="color:#ff4d4f;"> *</span></div>
+                    <Input Placeholder="AccessKey" @bind-Value="_backupAccessKey" />
+                </div>
+                <div style="width:220px;">
+                    <div style="margin-bottom:6px;"><Text Strong="true">SecretKey</Text><span style="color:#ff4d4f;"> *</span></div>
+                    <InputPassword Placeholder="SecretKey" @bind-Value="_backupSecretKey" />
+                </div>
+            </Space>
+            <div>
+                <div style="margin-bottom:6px;"><Text Strong="true">Bucket</Text><span style="color:#ff4d4f;"> *</span></div>
+                <Input Placeholder="如 nvr-backup" @bind-Value="_backupBucket" />
+            </div>
+            <div>
+                <div style="margin-bottom:6px;"><Text Strong="true">对象前缀 (Prefix)</Text></div>
+                <Input Placeholder="如 apiext/mediakit（留空则存到 Bucket 根目录）" @bind-Value="_backupPrefix" />
+            </div>
+        }
+        else
+        {
+            <div>
+                <div style="margin-bottom:6px;"><Text Strong="true">备份挂载目录</Text><span style="color:#ff4d4f;"> *</span></div>
+                <Input Placeholder="如 /backup/nas" @bind-Value="_backupTarget" />
+                <div style="margin-top:6px;color:#9aa5b1;font-size:12px;">SMB / NFS 需先在宿主机侧挂载，并通过 docker-compose 映射进容器。</div>
+            </div>
+        }
+
+        <Space>
+            <Text>启用自动备份</Text>
+            <Switch @bind-Value="_backupEnabled" />
+        </Space>
+    </div>
+</Modal>
+
+@code {
+    [Inject] private RecordingBackupService Backup { get; set; } = default!;
+    [Inject] private MessageService Message { get; set; } = default!;
+
+    private bool _backupsLoading;
+    private List<BackupTarget> _backups = new();
+    private bool _backupFormVisible;
+    private bool _backupSaveLoading;
+    private int? _editingBackupId;
+    private string _backupName = "";
+    private string _backupType = "nfs";
+    private string _backupSource = "";
+    private string _backupTarget = "";
+    private string _backupEndpoint = "";
+    private string _backupRegion = "";
+    private string _backupAccessKey = "";
+    private string _backupSecretKey = "";
+    private string _backupBucket = "";
+    private string _backupPrefix = "";
+    private bool _backupEnabled = true;
+
+    protected override Task OnInitializedAsync() => LoadBackupsAsync();
+
+    private async Task LoadBackupsAsync()
+    {
+        _backupsLoading = true;
+        try
+        {
+            _backups = await Backup.ListAsync();
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载备份目标失败：{ex.Message}");
+            _backups = new();
+        }
+        finally
+        {
+            _backupsLoading = false;
+        }
+    }
+
+    private void OpenBackupAdd()
+    {
+        _editingBackupId = null;
+        _backupName = "";
+        _backupType = "nfs";
+        _backupSource = "";
+        _backupTarget = "";
+        _backupEndpoint = "";
+        _backupRegion = "";
+        _backupAccessKey = "";
+        _backupSecretKey = "";
+        _backupBucket = "";
+        _backupPrefix = "";
+        _backupEnabled = true;
+        _backupFormVisible = true;
+    }
+
+    private void OpenBackupEdit(BackupTarget row)
+    {
+        _editingBackupId = row.Id;
+        _backupName = row.Name;
+        _backupType = row.Type;
+        _backupSource = row.SourcePath;
+        _backupTarget = row.TargetPath;
+        _backupEndpoint = row.Endpoint;
+        _backupRegion = row.Region;
+        _backupAccessKey = row.AccessKey;
+        _backupSecretKey = row.SecretKey;
+        _backupBucket = row.Bucket;
+        _backupPrefix = row.Prefix;
+        _backupEnabled = row.Enabled;
+        _backupFormVisible = true;
+    }
+
+    private void CloseBackupForm() => _backupFormVisible = false;
+
+    private async Task SubmitBackupForm()
+    {
+        if (string.IsNullOrWhiteSpace(_backupName))
+        {
+            Message.Warning("请填写名称");
+            return;
+        }
+
+        _backupSaveLoading = true;
+        var target = new BackupTarget
+        {
+            Name = _backupName.Trim(),
+            Type = _backupType,
+            SourcePath = _backupSource.Trim(),
+            TargetPath = _backupTarget.Trim(),
+            Endpoint = _backupEndpoint.Trim(),
+            Region = _backupRegion.Trim(),
+            AccessKey = _backupAccessKey.Trim(),
+            SecretKey = _backupSecretKey.Trim(),
+            Bucket = _backupBucket.Trim(),
+            Prefix = _backupPrefix.Trim(),
+            Enabled = _backupEnabled,
+        };
+
+        if (_editingBackupId != null)
+        {
+            target.Id = _editingBackupId.Value;
+        }
+
+        var (ok, error) = _editingBackupId == null
+            ? await Backup.AddAsync(target)
+            : await Backup.UpdateAsync(target);
+        _backupSaveLoading = false;
+
+        if (ok)
+        {
+            _backupFormVisible = false;
+            Message.Success("已保存");
+            await LoadBackupsAsync();
+        }
+        else
+        {
+            Message.Error(error ?? "保存失败");
+        }
+    }
+
+    private async Task DeleteBackupAsync(BackupTarget row)
+    {
+        var (ok, error) = await Backup.DeleteAsync(row.Id);
+        if (ok)
+        {
+            Message.Success("已删除");
+            await LoadBackupsAsync();
+        }
+        else
+        {
+            Message.Error(error ?? "删除失败");
+        }
+    }
+
+    private async Task ToggleBackupAsync(BackupTarget row, bool enabled)
+    {
+        var (ok, error) = await Backup.ToggleAsync(row.Id, enabled);
+        if (!ok)
+        {
+            Message.Error(error ?? "操作失败");
+            await LoadBackupsAsync();
+        }
+    }
+
+    private async Task SyncBackupAsync(BackupTarget row)
+    {
+        var (_, _, message) = await Backup.SyncAsync(row);
+        Message.Success(message);
+        await LoadBackupsAsync();
+    }
+
+    private async Task SyncAllBackupsAsync()
+    {
+        await Backup.SyncAllAsync();
+        Message.Success("已执行一轮备份");
+        await LoadBackupsAsync();
+    }
+
+    private static string BackupTypeText(string type) => type switch
+    {
+        "smb" => "SMB",
+        "s3" => "S3",
+        _ => "NFS",
+    };
+
+    private static string BackupTypeColor(string type) => type switch
+    {
+        "smb" => "blue",
+        "s3" => "orange",
+        _ => "green",
+    };
+
+    private static string FormatBackupTime(DateTime? time)
+        => time == null ? "-" : time.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+}

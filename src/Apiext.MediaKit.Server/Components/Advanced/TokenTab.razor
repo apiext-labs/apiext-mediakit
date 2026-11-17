@@ -1,0 +1,164 @@
+@* 高级配置 → 访问令牌（应用代理层）+ 播放令牌状态（ZLM 层） *@
+<Alert Type="@AlertType.Info" ShowIcon="true" Style="margin-bottom:12px;"
+       Message="「访问令牌」用于对外地址：平台代理播放地址（/play/...）、直连播放地址、REST 与云台 API。有效期选「永久」就长期有效，只有在禁用或删除该令牌之后才失效。" />
+
+<Alert Type="@(PlayToken.Enabled ? AlertType.Success : AlertType.Warning)" ShowIcon="true" Style="margin-bottom:12px;"
+       Message="@(PlayToken.Enabled
+           ? $"站内播放签名（播放令牌）：站内播放器、国标点播、录像回放的地址由系统自动附加短时签名，{PlayToken.TtlSeconds / 60} 分钟换一次，断线后 {PlayToken.GraceSeconds / 3600} 小时内仍可重连{(PlayToken.BindClientIp ? "（已绑定客户端 IP）" : "")}。它只作用于站内播放，不会让上面访问令牌生成的对外地址过期。"
+           : "站内播放签名（播放令牌）未启用（PlayToken:Secret 不足 32 字节）：站内播放与录像地址不带签名、直连播放不再校验。生产环境请配置密钥后重启。")" />
+
+<Space Style="margin-bottom:12px;">
+    <Button Type="@ButtonType.Primary" Icon="plus" OnClick="OpenTokenCreate">生成令牌</Button>
+    <Button Icon="reload" OnClick="@(async () => await LoadTokensAsync())">刷新</Button>
+</Space>
+<Table DataSource="_tokens" Loading="_tokensLoading" Size="@TableSize.Small">
+    <AntDesign.Column Title="名称" @bind-Field="@context.Name" />
+    <AntDesign.Column Title="令牌" TData="string">
+        <span style="font-family:var(--apiext-font-mono, monospace);word-break:break-all;">@MaskToken(context.Token)</span>
+    </AntDesign.Column>
+    <AntDesign.Column Title="有效期" Width="150" TData="string">
+        @(context.ExpiresAt == null ? "永久" : context.ExpiresAt.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm"))
+    </AntDesign.Column>
+    <AntDesign.Column Title="状态" Width="80" TData="string">
+        <Tag Color="@(context.Enabled ? "success" : "default")">@(context.Enabled ? "启用" : "禁用")</Tag>
+    </AntDesign.Column>
+    <AntDesign.Column Title="最近使用" Width="160" TData="string">
+        @(context.LastUsedAt == null ? "-" : context.LastUsedAt.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"))
+    </AntDesign.Column>
+    <ActionColumn Title="操作" Width="150">
+        <Space Style="gap:4px;">
+            <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => CopyToken(context.Token))">复制</Button>
+            <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => ToggleTokenAsync(context))">@(context.Enabled ? "禁用" : "启用")</Button>
+            <Popconfirm Title="删除该令牌？使用该令牌的地址将立即失效。" OkText="删除" CancelText="取消" OnConfirm="@(() => DeleteTokenAsync(context))">
+                <Button Type="@ButtonType.Link" Danger="true" Size="@ButtonSize.Small">删除</Button>
+            </Popconfirm>
+        </Space>
+    </ActionColumn>
+</Table>
+
+<Modal Title="@("生成访问令牌")"
+       Visible="@_tokenCreateVisible"
+       OkText="@("生成")"
+       CancelText="@("取消")"
+       ConfirmLoading="@_tokenCreating"
+       OnOk="@(async () => await CreateTokenAsync())"
+       OnCancel="CloseTokenCreate">
+    <div style="display:flex;flex-direction:column;gap:16px;">
+        <div>
+            <div style="margin-bottom:6px;"><Text Strong="true">名称</Text></div>
+            <Input Placeholder="如 第三方集成 / 播放器访问" @bind-Value="_tokenName" />
+        </div>
+        <div>
+            <div style="margin-bottom:6px;"><Text Strong="true">有效期</Text></div>
+            <RadioGroup @bind-Value="_tokenExpire" ButtonStyle="@RadioButtonStyle.Solid">
+                <Radio RadioButton="true" Value="@("forever")">永久</Radio>
+                <Radio RadioButton="true" Value="@("7d")">7 天</Radio>
+                <Radio RadioButton="true" Value="@("30d")">30 天</Radio>
+                <Radio RadioButton="true" Value="@("90d")">90 天</Radio>
+            </RadioGroup>
+        </div>
+    </div>
+</Modal>
+
+@code {
+    [Inject] private TokenService Tokens { get; set; } = default!;
+    [Inject] private PlayTokenService PlayToken { get; set; } = default!;
+    [Inject] private MessageService Message { get; set; } = default!;
+    [Inject] private IJSRuntime JS { get; set; } = default!;
+
+    private bool _tokensLoading;
+    private List<ApiToken> _tokens = new();
+    private bool _tokenCreateVisible;
+    private bool _tokenCreating;
+    private string _tokenName = "";
+    private string _tokenExpire = "forever";
+
+    protected override Task OnInitializedAsync() => LoadTokensAsync();
+
+    private async Task LoadTokensAsync()
+    {
+        _tokensLoading = true;
+        try
+        {
+            _tokens = await Tokens.ListAsync();
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载令牌失败：{ex.Message}");
+            _tokens = new();
+        }
+        finally
+        {
+            _tokensLoading = false;
+        }
+    }
+
+    private void OpenTokenCreate()
+    {
+        _tokenName = "";
+        _tokenExpire = "forever";
+        _tokenCreateVisible = true;
+    }
+
+    private void CloseTokenCreate() => _tokenCreateVisible = false;
+
+    private async Task CreateTokenAsync()
+    {
+        _tokenCreating = true;
+        try
+        {
+            DateTime? expires = _tokenExpire switch
+            {
+                "7d" => DateTime.UtcNow.AddDays(7),
+                "30d" => DateTime.UtcNow.AddDays(30),
+                "90d" => DateTime.UtcNow.AddDays(90),
+                _ => null,
+            };
+            await Tokens.CreateAsync(_tokenName, expires);
+            _tokenCreateVisible = false;
+            Message.Success("已生成令牌");
+            await LoadTokensAsync();
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"生成失败：{ex.Message}");
+        }
+        finally
+        {
+            _tokenCreating = false;
+        }
+    }
+
+    private async Task ToggleTokenAsync(ApiToken token)
+    {
+        var (ok, error) = await Tokens.SetEnabledAsync(token.Id, !token.Enabled);
+        if (ok)
+        {
+            Message.Success(token.Enabled ? "已禁用" : "已启用");
+            await LoadTokensAsync();
+        }
+        else
+        {
+            Message.Error(error ?? "操作失败");
+        }
+    }
+
+    private async Task DeleteTokenAsync(ApiToken token)
+    {
+        await Tokens.DeleteAsync(token.Id);
+        Message.Success("已删除");
+        await LoadTokensAsync();
+    }
+
+    private async Task CopyToken(string token)
+    {
+        var result = await JS.InvokeAsync<string>("apiextUtil.copy", token);
+        if (result == "OK") Message.Success("已复制令牌");
+    }
+
+    private static string MaskToken(string token)
+    {
+        if (string.IsNullOrEmpty(token) || token.Length <= 12) return token;
+        return $"{token[..8]}…{token[^4..]}";
+    }
+}

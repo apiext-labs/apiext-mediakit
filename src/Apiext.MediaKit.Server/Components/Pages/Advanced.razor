@@ -1,0 +1,26 @@
+@page "/advanced"
+@attribute [Authorize]
+@using Apiext.MediaKit.Server.Components.Advanced
+
+<Card>
+    <Tabs DefaultActiveKey="cascade">
+        <TabPane Key="cascade" Tab="国标级联">
+            <CascadeTab />
+        </TabPane>
+        <TabPane Key="sip" Tab="SIP 接入">
+            <SipTab />
+        </TabPane>
+        <TabPane Key="ports" Tab="端口清单">
+            <PortsTab />
+        </TabPane>
+        <TabPane Key="zlm" Tab="ZLM 配置">
+            <ZlmTab />
+        </TabPane>
+        <TabPane Key="backup" Tab="录像备份">
+            <BackupTab />
+        </TabPane>
+        <TabPane Key="token" Tab="访问令牌">
+            <TokenTab />
+        </TabPane>
+    </Tabs>
+</Card>

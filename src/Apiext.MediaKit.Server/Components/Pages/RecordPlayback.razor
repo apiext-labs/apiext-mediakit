@@ -1,0 +1,576 @@
+@page "/playback"
+@attribute [Authorize]
+@implements IDisposable
+@inject PullProxyService PullProxy
+@inject ZlmService Zlm
+@inject Gb28181Service Gb
+@inject MessageService Message
+@inject IJSRuntime JS
+
+<Card BodyStyle="padding:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:12px;">
+        <Tabs @bind-ActiveKey="_tab" Style="margin-bottom:0;">
+            <TabPane Key="local" Tab="本地录像"></TabPane>
+            <TabPane Key="cloud" Tab="卡录像"></TabPane>
+            <TabPane Key="plan" Tab="录像计划"></TabPane>
+        </Tabs>
+        <div style="display:flex;gap:8px;align-items:center;">
+            @if (!_loading)
+            {
+                <span style="color:#718096;font-size:13px;">共 @CurrentCount 路</span>
+            }
+            <div style="width:240px;">
+                <Input Placeholder="请输入设备 ID 或名称" @bind-Value="_search" AllowClear="true" Style="width:100%;">
+                    <Prefix><Icon Type="search" /></Prefix>
+                </Input>
+            </div>
+            <Button Type="@ButtonType.Primary" Icon="reload" OnClick="@(async () => await LoadAsync())">刷新</Button>
+        </div>
+    </div>
+
+    @if (_tab == "local")
+    {
+        @if (!_loading && LocalFiltered.Count == 0)
+        {
+            <Empty Description="@(_localRows.Count == 0 ? "暂无拉流设备可录像，请先在「设备列表」添加拉流" : "没有符合条件的设备")" />
+        }
+        else
+        {
+            <Table DataSource="LocalFiltered" Loading="_loading">
+                <AntDesign.Column Title="流 ID / 应用" TData="string">
+                    <div style="display:flex;flex-direction:column;line-height:1.5;">
+                        <span style="font-weight:500;color:#2d3748;word-break:break-all;">@context.Stream</span>
+                        <span style="color:#9aa5b1;font-size:12px;word-break:break-all;">@context.App</span>
+                    </div>
+                </AntDesign.Column>
+                <AntDesign.Column Title="通道状态" Width="100" TData="string">
+                    <Badge Status="@(context.IsOnline ? BadgeStatus.Success : BadgeStatus.Default)"
+                           Text="@(context.IsOnline ? "在线" : "离线")" />
+                </AntDesign.Column>
+                <AntDesign.Column Title="录像状态" Width="110" TData="string">
+                    @if (context.IsRecording)
+                    {
+                        <Tag Color="@("processing")">录像中</Tag>
+                    }
+                    else if (context.EnableRecord)
+                    {
+                        <Tag Color="@("warning")">待录制</Tag>
+                    }
+                    else
+                    {
+                        <Tag Color="@("default")">未开启</Tag>
+                    }
+                </AntDesign.Column>
+                <AntDesign.Column Title="录像类型" Width="100" TData="string">
+                    <Tag>MP4</Tag>
+                </AntDesign.Column>
+                <AntDesign.Column Title="快照" Width="132" TData="string">
+                    @if (context.IsOnline)
+                    {
+                        <img class="snap-thumb" src="@Zlm.BuildSnapUrl(context.App, context.Stream)"
+                             alt="快照" title="点击查看大图"
+                             onerror="this.onerror=null;this.src='/img/device-cover.svg';"
+                             @onclick="() => OpenSnap(context)" />
+                    }
+                    else
+                    {
+                        <img class="snap-thumb snap-thumb-off" src="/img/device-cover.svg"
+                             alt="离线" title="设备离线，暂无快照" />
+                    }
+                </AntDesign.Column>
+                <ActionColumn Title="操作" Width="100">
+                    <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" Icon="play-circle"
+                            OnClick="@(() => OpenLocalPlayback(context))">回放</Button>
+                </ActionColumn>
+            </Table>
+        }
+    }
+    else if (_tab == "cloud")
+    {
+        @if (!_loading && CloudFiltered.Count == 0)
+        {
+            <Empty Description="@(_cloudRows.Count == 0 ? "暂无国标设备通道，设备注册并查询目录后在此回放" : "没有符合条件的通道")" />
+        }
+        else
+        {
+            <Table DataSource="CloudFiltered" Loading="_loading">
+                <AntDesign.Column Title="设备名称 / ID" TData="string">
+                    <div style="display:flex;flex-direction:column;line-height:1.5;">
+                        <span style="font-weight:500;color:#2d3748;word-break:break-all;">@context.DeviceName</span>
+                        <span style="color:#9aa5b1;font-size:12px;word-break:break-all;">@context.DeviceId</span>
+                    </div>
+                </AntDesign.Column>
+                <AntDesign.Column Title="通道名称 / ID" TData="string">
+                    <div style="display:flex;flex-direction:column;line-height:1.5;">
+                        <span style="font-weight:500;color:#2d3748;word-break:break-all;">@context.ChannelName</span>
+                        <span style="color:#9aa5b1;font-size:12px;word-break:break-all;">@context.ChannelId</span>
+                    </div>
+                </AntDesign.Column>
+                <AntDesign.Column Title="通道状态" Width="100" TData="string">
+                    <Badge Status="@(context.Online ? BadgeStatus.Success : BadgeStatus.Default)"
+                           Text="@(context.Online ? "在线" : "离线")" />
+                </AntDesign.Column>
+                <AntDesign.Column Title="录像类型" Width="110" TData="string">
+                    <Tag>设备侧录像</Tag>
+                </AntDesign.Column>
+                <ActionColumn Title="操作" Width="110">
+                    <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" Icon="search" Disabled="@(!context.Online)"
+                            OnClick="@(() => OpenRecordQuery(context))">录像查询</Button>
+                </ActionColumn>
+            </Table>
+        }
+    }
+    else
+    {
+        <Alert Type="@AlertType.Info" ShowIcon="true" Style="margin-bottom:12px;"
+               Message="开启后持续录制 MP4，可在「本地录像」页签回放。" />
+        @if (!_loading && PlanFiltered.Count == 0)
+        {
+            <Empty Description="@(_localRows.Count == 0 ? "暂无拉流设备可配置录像计划" : "没有符合条件的设备")" />
+        }
+        else
+        {
+            <Table DataSource="PlanFiltered" Loading="_loading">
+                <AntDesign.Column Title="流 ID / 应用" TData="string">
+                    <div style="display:flex;flex-direction:column;line-height:1.5;">
+                        <span style="font-weight:500;color:#2d3748;word-break:break-all;">@context.Stream</span>
+                        <span style="color:#9aa5b1;font-size:12px;word-break:break-all;">@context.App</span>
+                    </div>
+                </AntDesign.Column>
+                <AntDesign.Column Title="通道状态" Width="100" TData="string">
+                    <Badge Status="@(context.IsOnline ? BadgeStatus.Success : BadgeStatus.Default)"
+                           Text="@(context.IsOnline ? "在线" : "离线")" />
+                </AntDesign.Column>
+                <AntDesign.Column Title="录像计划" Width="140" TData="string">
+                    <Space>
+                        <Switch Checked="@context.EnableRecord" Loading="@context.Switching"
+                                OnChange="@(async (bool v) => await TogglePlan(context, v))" />
+                        @if (context.IsRecording)
+                        {
+                            <Tag Color="@("processing")">录像中</Tag>
+                        }
+                    </Space>
+                </AntDesign.Column>
+            </Table>
+        }
+    }
+</Card>
+
+@* 本地录像：快照大图 *@
+<Modal Title="@($"快照 - {_snapTitle}")"
+       Visible="@_snapVisible"
+       Footer="null"
+       OnCancel="@(() => _snapVisible = false)"
+       Width="720">
+    @if (_snapVisible)
+    {
+        <img src="@_snapUrl" style="width:100%;border-radius:6px;background:#000;" alt="快照" />
+        <div style="margin-top:8px;color:#9aa5b1;font-size:12px;">画面空白或破图说明流已离线或抓拍失败，请先确认设备在线。</div>
+    }
+</Modal>
+
+@* 本地录像：按日期查询录像文件 *@
+<Drawer Title="@($"本地录像回放 - {_localApp}/{_localStream}")"
+        Width="640"
+        Visible="@_localDrawerVisible"
+        OnClose="CloseLocalPlayback">
+    <Space Style="margin-bottom:12px;">
+        <DatePicker @bind-Value="_localDate" />
+        <Button Type="@ButtonType.Primary" Size="@ButtonSize.Small" Loading="_localLoading"
+                OnClick="@(async () => await LoadLocalFiles())">查询</Button>
+    </Space>
+    <Table DataSource="_localFiles" Loading="_localLoading" Size="@TableSize.Small">
+        <AntDesign.Column Title="文件名" @bind-Field="@context.FileName" />
+        <ActionColumn Title="操作" Width="90">
+            <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => PlayLocalFile(context))">播放</Button>
+        </ActionColumn>
+    </Table>
+</Drawer>
+
+<Modal Title="@($"录像回放 - {_localVideoTitle}")"
+       Visible="@_localVideoVisible"
+       Footer="null"
+       OnCancel="CloseLocalVideo"
+       Width="720">
+    @if (_localVideoVisible)
+    {
+        <video src="@_localVideoUrl" controls autoplay style="width:100%;border-radius:6px;background:#000;"></video>
+    }
+</Modal>
+
+@* 卡录像：录像查询（时间段） *@
+<Modal Title="@($"录像查询 - {_cloudChannel?.ChannelName}")"
+       Visible="@_cloudQueryVisible"
+       OkText="@("查询")"
+       CancelText="@("关闭")"
+       ConfirmLoading="@_cloudLoading"
+       OnOk="@(async () => await QueryCloudRecords())"
+       OnCancel="CloseCloudQuery"
+       Width="760">
+    <Space Style="margin-bottom:12px;flex-wrap:wrap;">
+        <Text>起始：</Text>
+        <DatePicker @bind-Value="_cloudStart" ShowTime="true" />
+        <Text>结束：</Text>
+        <DatePicker @bind-Value="_cloudEnd" ShowTime="true" />
+    </Space>
+    <Table DataSource="_cloudRecords" Loading="_cloudLoading" Size="@TableSize.Small">
+        <AntDesign.Column Title="开始时间" Width="150" TData="string">@context.StartTime</AntDesign.Column>
+        <AntDesign.Column Title="结束时间" Width="150" TData="string">@context.EndTime</AntDesign.Column>
+        <AntDesign.Column Title="名称" @bind-Field="@context.Name" />
+        <AntDesign.Column Title="类型" Width="90" @bind-Field="@context.Type" />
+        <ActionColumn Title="操作" Width="90">
+            <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => StartCloudPlayback(context))">回放</Button>
+        </ActionColumn>
+    </Table>
+</Modal>
+
+@* 卡录像：回放播放器 *@
+<Modal Title="@($"录像回放 - {_cloudChannel?.ChannelName}")"
+       Visible="@_cloudPlayVisible"
+       Footer="null"
+       Width="720"
+       OnCancel="CloseCloudPlayback"
+       DestroyOnClose="true">
+    <div style="background:#000;aspect-ratio:16/9;border-radius:6px;overflow:hidden;">
+        <div id="playback-player" style="width:100%;height:100%;"></div>
+    </div>
+    <div style="margin-top:12px;border-top:1px solid #f0f0f0;padding-top:12px;">
+        <Space Style="flex-wrap:wrap;">
+            <Button Size="@ButtonSize.Small" OnClick="@(() => ToggleCloudPause())">@(_cloudPaused ? "继续" : "暂停")</Button>
+            <Text>跳转(秒)：</Text>
+            <AntDesign.InputNumber @bind-Value="_cloudSeek" Min="0" Style="width:120px;" />
+            <Button Type="@ButtonType.Primary" Size="@ButtonSize.Small" OnClick="@(() => SeekCloud())">跳转</Button>
+            <Button Danger="true" Size="@ButtonSize.Small" OnClick="@(() => CloseCloudPlayback())">停止</Button>
+        </Space>
+    </div>
+</Modal>
+
+@code {
+    private class LocalRow
+    {
+        public string App { get; set; } = "";
+        public string Stream { get; set; } = "";
+        public bool IsOnline { get; set; }
+        public bool EnableRecord { get; set; }
+        public bool IsRecording { get; set; }
+        public bool Switching { get; set; }
+    }
+
+    private class LocalFileRow
+    {
+        public LocalFileRow(string fileName) => FileName = fileName;
+        public string FileName { get; set; } = "";
+    }
+
+    private class CloudRow
+    {
+        public string DeviceId { get; set; } = "";
+        public string DeviceName { get; set; } = "";
+        public string ChannelId { get; set; } = "";
+        public string ChannelName { get; set; } = "";
+        public bool Online { get; set; }
+    }
+
+    private string _tab = "local";
+    private string _search = "";
+    private bool _loading;
+
+    private List<LocalRow> _localRows = new();
+    private List<CloudRow> _cloudRows = new();
+
+    private List<LocalRow> LocalFiltered => string.IsNullOrWhiteSpace(_search)
+        ? _localRows
+        : _localRows.Where(r => r.App.Contains(_search, StringComparison.OrdinalIgnoreCase)
+                             || r.Stream.Contains(_search, StringComparison.OrdinalIgnoreCase)).ToList();
+
+    private List<CloudRow> CloudFiltered => string.IsNullOrWhiteSpace(_search)
+        ? _cloudRows
+        : _cloudRows.Where(r => r.DeviceName.Contains(_search, StringComparison.OrdinalIgnoreCase)
+                             || r.DeviceId.Contains(_search, StringComparison.OrdinalIgnoreCase)
+                             || r.ChannelName.Contains(_search, StringComparison.OrdinalIgnoreCase)
+                             || r.ChannelId.Contains(_search, StringComparison.OrdinalIgnoreCase)).ToList();
+
+    private List<LocalRow> PlanFiltered => LocalFiltered;
+
+    /// <summary>当前页签条数（顶部统计）。</summary>
+    private int CurrentCount => _tab switch
+    {
+        "local" => LocalFiltered.Count,
+        "cloud" => CloudFiltered.Count,
+        _ => PlanFiltered.Count
+    };
+
+    // 快照大图
+    private bool _snapVisible;
+    private string _snapUrl = "";
+    private string _snapTitle = "";
+
+    private void OpenSnap(LocalRow row)
+    {
+        _snapTitle = $"{row.App}/{row.Stream}";
+        _snapUrl = Zlm.BuildSnapUrl(row.App, row.Stream);
+        _snapVisible = true;
+    }
+
+    // 本地录像回放
+    private bool _localDrawerVisible;
+    private bool _localLoading;
+    private string _localApp = "";
+    private string _localStream = "";
+    private DateTime? _localDate = DateTime.Today;
+    private List<LocalFileRow> _localFiles = new();
+    private bool _localVideoVisible;
+    private string _localVideoUrl = "";
+    private string _localVideoTitle = "";
+
+    // 卡录像
+    private CloudRow? _cloudChannel;
+    private bool _cloudQueryVisible;
+    private bool _cloudLoading;
+    private DateTime? _cloudStart;
+    private DateTime? _cloudEnd;
+    private List<GbRecordItem> _cloudRecords = new();
+    private bool _cloudPlayVisible;
+    private bool _cloudPendingPlay;
+    private string _cloudPlaybackUrl = "";
+    private string _cloudPlaybackStreamId = "";
+    private int _cloudSeek;
+    private bool _cloudPaused;
+
+    private DotNetObjectReference<RecordPlayback>? _dotNetRef;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _dotNetRef = DotNetObjectReference.Create(this);
+        await LoadAsync();
+    }
+
+    /// <summary>播放器（jessibuca）失败回调：避免只留黑屏。</summary>
+    [JSInvokable]
+    public Task OnPlayerError(string playerId, string message)
+    {
+        Message.Error($"回放失败：{message}。若是录像时间已过或设备已停止推流，请重新查询回放。");
+        return Task.CompletedTask;
+    }
+
+    public void Dispose() => _dotNetRef?.Dispose();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_cloudPendingPlay)
+        {
+            _cloudPendingPlay = false;
+            await JS.InvokeVoidAsync("apiextPlayer.create", "playback-player", "playback-player", _dotNetRef);
+            await JS.InvokeVoidAsync("apiextPlayer.play", "playback-player", _cloudPlaybackUrl);
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            // 本地录像 / 录像计划：拉流代理
+            var proxies = await PullProxy.ListAsync();
+            _localRows = proxies.Select(p => new LocalRow
+            {
+                App = p.App,
+                Stream = p.Stream,
+                IsOnline = p.IsOnline,
+                EnableRecord = p.EnableRecord,
+                IsRecording = p.IsRecording,
+            }).ToList();
+
+            // 卡录像：国标设备通道
+            var cloud = new List<CloudRow>();
+            var devices = await Gb.GetDevicesAsync();
+            foreach (var d in devices)
+            {
+                var channels = await Gb.GetChannelsAsync(d.DeviceId);
+                foreach (var c in channels)
+                {
+                    cloud.Add(new CloudRow
+                    {
+                        DeviceId = d.DeviceId,
+                        DeviceName = string.IsNullOrEmpty(d.Name) ? d.DeviceId : d.Name,
+                        ChannelId = c.ChannelId,
+                        ChannelName = string.IsNullOrEmpty(c.Name) ? c.ChannelId : c.Name,
+                        Online = d.Online && c.Status == "ON",
+                    });
+                }
+            }
+            _cloudRows = cloud;
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载数据失败：{ex.Message}");
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    // ---------- 本地录像 ----------
+
+    private void OpenLocalPlayback(LocalRow row)
+    {
+        _localApp = row.App;
+        _localStream = row.Stream;
+        _localDate = DateTime.Today;
+        _localFiles = new();
+        _localDrawerVisible = true;
+        _ = LoadLocalFiles();
+    }
+
+    private void CloseLocalPlayback() => _localDrawerVisible = false;
+
+    private async Task LoadLocalFiles()
+    {
+        if (_localDate == null) return;
+        _localLoading = true;
+        try
+        {
+            var period = _localDate.Value.ToString("yyyy-MM-dd");
+            var files = await PullProxy.GetRecordFilesAsync(_localApp, _localStream, period);
+            _localFiles = files
+                .Select(f => new LocalFileRow(System.IO.Path.GetFileName(f)))
+                .OrderByDescending(f => f.FileName, StringComparer.Ordinal)
+                .ToList();
+            if (_localFiles.Count == 0) Message.Info("该日期下暂无录像");
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"查询录像失败：{ex.Message}");
+            _localFiles = new();
+        }
+        finally
+        {
+            _localLoading = false;
+        }
+    }
+
+    private void PlayLocalFile(LocalFileRow file)
+    {
+        if (_localDate == null) return;
+        _localVideoTitle = file.FileName;
+        _localVideoUrl = Zlm.BuildRecordUrl(_localApp, _localStream, _localDate.Value.ToString("yyyy-MM-dd"), file.FileName);
+        _localVideoVisible = true;
+    }
+
+    private void CloseLocalVideo() => _localVideoVisible = false;
+
+    // ---------- 录像计划 ----------
+
+    private async Task TogglePlan(LocalRow row, bool enable)
+    {
+        row.Switching = true;
+        try
+        {
+            var (ok, error) = await PullProxy.SetRecordAsync(row.App, row.Stream, enable);
+            if (ok)
+            {
+                row.EnableRecord = enable;
+                Message.Success(enable ? "已开启录像计划" : "已关闭录像计划");
+            }
+            else
+            {
+                Message.Error(error ?? "操作失败");
+            }
+        }
+        finally
+        {
+            row.Switching = false;
+        }
+    }
+
+    // ---------- 卡录像 ----------
+
+    private void OpenRecordQuery(CloudRow row)
+    {
+        _cloudChannel = row;
+        _cloudStart = DateTime.Today;
+        _cloudEnd = DateTime.Now;
+        _cloudRecords = new();
+        _cloudQueryVisible = true;
+    }
+
+    private void CloseCloudQuery() => _cloudQueryVisible = false;
+
+    private async Task QueryCloudRecords()
+    {
+        if (_cloudChannel == null || _cloudStart == null || _cloudEnd == null)
+        {
+            Message.Warning("请选择起止时间");
+            return;
+        }
+
+        _cloudLoading = true;
+        try
+        {
+            var (ok, error, records) = await Gb.RecordQueryAsync(_cloudChannel.ChannelId, _cloudStart.Value, _cloudEnd.Value);
+            if (ok)
+            {
+                _cloudRecords = records ?? new();
+                if (_cloudRecords.Count == 0) Message.Info("该时间段内无录像");
+            }
+            else
+            {
+                Message.Error(error ?? "录像查询失败");
+            }
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"录像查询失败：{ex.Message}");
+        }
+        finally
+        {
+            _cloudLoading = false;
+        }
+    }
+
+    private async Task StartCloudPlayback(GbRecordItem record)
+    {
+        if (_cloudChannel == null) return;
+        var (ok, error, url, streamId) = await Gb.StartPlaybackAsync(_cloudChannel.ChannelId, record);
+        if (ok && url != null)
+        {
+            _cloudPlaybackUrl = url;
+            _cloudPlaybackStreamId = streamId ?? "";
+            _cloudSeek = 0;
+            _cloudPaused = false;
+            _cloudPlayVisible = true;
+            _cloudPendingPlay = true;
+        }
+        else
+        {
+            Message.Error(error ?? "回放失败");
+        }
+    }
+
+    private async Task CloseCloudPlayback()
+    {
+        _cloudPlayVisible = false;
+        await JS.InvokeVoidAsync("apiextPlayer.destroy", "playback-player");
+        if (!string.IsNullOrEmpty(_cloudPlaybackStreamId))
+        {
+            try { await Gb.StopPlaybackAsync(_cloudPlaybackStreamId); } catch { }
+        }
+        _cloudPlaybackStreamId = "";
+        _cloudPlaybackUrl = "";
+    }
+
+    private async Task SeekCloud()
+    {
+        if (string.IsNullOrEmpty(_cloudPlaybackStreamId)) return;
+        _cloudPaused = false;
+        await Gb.PlaybackControlAsync(_cloudPlaybackStreamId, _cloudSeek);
+    }
+
+    private async Task ToggleCloudPause()
+    {
+        if (string.IsNullOrEmpty(_cloudPlaybackStreamId)) return;
+        await Gb.PlaybackControlAsync(_cloudPlaybackStreamId, _cloudSeek, !_cloudPaused);
+        _cloudPaused = !_cloudPaused;
+    }
+}

@@ -1,0 +1,824 @@
+@page "/player"
+@attribute [Authorize]
+@implements IDisposable
+@inject ZlmService Zlm
+@inject PullProxyService PullProxy
+@inject Gb28181Service Gb
+@inject DeviceGroupService DeviceGroups
+@inject IJSRuntime JS
+@inject MessageService Message
+
+<div style="display:flex;gap:12px;align-items:stretch;">
+    @* 左侧：设备树（自定义分组）/ 按协议（自适应高度，内部滚动） + 底部云台控制 *@
+    <div style="width:250px;flex-shrink:0;display:flex;flex-direction:column;gap:12px;">
+        <Card Style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;"
+              BodyStyle="flex:1;min-height:0;overflow-y:auto;padding:8px 12px;">
+            <Tabs @bind-ActiveKey="_treeTab" Size="@TabSize.Small" Style="margin-bottom:0;">
+                <TabPane Key="tree" Tab="设备树">
+                    @if (_loadingTree)
+                    {
+                        <div style="text-align:center;padding:24px;"><Spin /></div>
+                    }
+                    else
+                    {
+                        <div style="display:flex;justify-content:space-between;align-items:center;padding:0 4px 6px;">
+                            <span style="color:#9aa5b1;font-size:12px;">@(_customGroups.Count > 0 ? $"自定义分组 {_customGroups.Count} 个" : "未设置自定义分组")</span>
+                            <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" Icon="folder" OnClick="OpenGroupManager">分组管理</Button>
+                        </div>
+                        @if (_treeGroups.Count == 0)
+                        {
+                            <div style="text-align:center;padding:24px;color:#9aa5b1;">暂无数据</div>
+                        }
+                        else
+                        {
+                            @foreach (var g in _treeGroups)
+                            {
+                                <div class="ptree-group" @onclick="@(() => ToggleGroup(g.Key))">
+                                    <Icon Type="@(g.Expanded ? "caret-down" : "caret-right")" />
+                                    <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">@g.Name</span>
+                                    <span style="color:#9aa5b1;font-size:12px;">（@g.Items.Count）</span>
+                                </div>
+                                @if (g.Expanded)
+                                {
+                                    @foreach (var item in g.Items)
+                                    {
+                                        <div class="ptree-item @(IsActive(item) ? "ptree-item-active" : "")"
+                                             @onclick="@(() => PlayItemAsync(item))">
+                                            <span class="ptree-dot @(item.Online ? "ptree-dot-online" : "")"></span>
+                                            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@item.Label">@item.Label</span>
+                                            <span class="ptree-act" title="设置分组" @onclick:stopPropagation="true" @onclick="@(() => OpenAssign(item))">
+                                                <Icon Type="folder" />
+                                            </span>
+                                        </div>
+                                    }
+                                    @if (g.Items.Count == 0)
+                                    {
+                                        <div class="ptree-empty">该分组暂无设备</div>
+                                    }
+                                }
+                            }
+                        }
+                    }
+                </TabPane>
+                <TabPane Key="group" Tab="按协议">
+                    @if (_loadingTree)
+                    {
+                        <div style="text-align:center;padding:24px;"><Spin /></div>
+                    }
+                    else if (_protoGroups.Count == 0)
+                    {
+                        <div style="text-align:center;padding:24px;color:#9aa5b1;">暂无数据</div>
+                    }
+                    else
+                    {
+                        @foreach (var g in _protoGroups)
+                        {
+                            <div class="ptree-group" @onclick="@(() => ToggleGroup(g.Key))">
+                                <Icon Type="@(g.Expanded ? "caret-down" : "caret-right")" />
+                                <span>@g.Name</span>
+                                <span style="color:#9aa5b1;font-size:12px;">（@g.Items.Count）</span>
+                            </div>
+                            @if (g.Expanded)
+                            {
+                                @foreach (var item in g.Items)
+                                {
+                                    <div class="ptree-item @(IsActive(item) ? "ptree-item-active" : "")"
+                                         @onclick="@(() => PlayItemAsync(item))">
+                                        <span class="ptree-dot @(item.Online ? "ptree-dot-online" : "")"></span>
+                                        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@item.Label">@item.Label</span>
+                                    </div>
+                                }
+                            }
+                        }
+                    }
+                </TabPane>
+            </Tabs>
+        </Card>
+
+        <Card BodyStyle="padding:8px 12px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;"
+                 @onclick="@(() => _ptzOpen = !_ptzOpen)">
+                <span>云台控制</span>
+                <Icon Type="@(_ptzOpen ? "caret-up" : "caret-down")" />
+            </div>
+            @if (_ptzOpen)
+            {
+                <div style="margin-top:12px;">
+                    <PtzPad Disabled="@(!PtzReady)" OnPtz="@(cmd => Ptz(cmd))" />
+                    @if (!PtzReady)
+                    {
+                        <div style="margin-top:8px;text-align:center;color:#9aa5b1;font-size:12px;">当前通道不支持云台（仅国标通道）</div>
+                    }
+                </div>
+            }
+        </Card>
+    </div>
+
+    @* 右侧：分屏 + 工具栏 *@
+    <div style="flex:1;min-width:0;">
+        <Card BodyStyle="padding:8px;">
+            <div id="player-grid" style="@($"display:grid;grid-template-columns:repeat({_cols},1fr);gap:4px;background:#111;")">
+                @foreach (var slot in _slots)
+                {
+                    var idx = slot.Index;
+                    <div style="background:#000;aspect-ratio:16/9;position:relative;overflow:hidden;border:@(slot.Index == _activeIndex ? "2px solid #f0a020" : "2px solid #000");"
+                         @onclick="@(() => SetActive(idx))">
+                        @if (slot.Kind == "")
+                        {
+                            <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#718096;">
+                                <span>无信号</span>
+                            </div>
+                        }
+                        else
+                        {
+                            <div id="@($"player-{slot.Index}")" style="position:absolute;inset:0;"></div>
+                            <div style="position:absolute;left:0;right:0;top:0;display:flex;justify-content:space-between;padding:2px 8px;background:rgba(0,0,0,0.45);color:#fff;font-size:12px;gap:6px;">
+                                <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">@slot.Label</span>
+                                <span style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
+                                    @if (!string.IsNullOrEmpty(slot.Codec))
+                                    {
+                                        <span class="pslot-codec" title="@(slot.Codec == "H265" ? "当前视频编码：H.265（软件解码）" : "当前视频编码：H.264（硬件解码）")">@FormatCodec(slot.Codec)</span>
+                                    }
+                                    <span>@(slot.Online ? "在线" : "按需")</span>
+                                </span>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+
+            <div style="margin-top:8px;background:#1f2733;border-radius:6px;padding:4px 12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px;">
+                <Space Style="color:#cfd8e3;font-size:12px;">
+                    <span>@ActiveLabel</span>
+                    <span>↑ @ActiveSpeed</span>
+                    @if (!string.IsNullOrEmpty(ActiveCodec))
+                    {
+                        <span class="pslot-codec" title="线上流的实际视频编码">@FormatCodec(ActiveCodec)@(ActiveCodec == "H265" ? " 软解" : " 硬解")</span>
+                    }
+                </Space>
+                <Space Style="gap:2px;">
+                    <Button Type="@ButtonType.Text" Size="@ButtonSize.Small" Icon="reload" Style="color:#cfd8e3;" Loading="_loadingTree" OnClick="@(async () => await LoadTreeAsync())" />
+                    <Button Type="@ButtonType.Text" Size="@ButtonSize.Small" Icon="camera" Style="color:#cfd8e3;" Disabled="@(!HasActiveStream)" OnClick="OpenSnap" />
+                    <Button Type="@ButtonType.Text" Size="@ButtonSize.Small" Icon="video-camera" Style="color:#cfd8e3;"
+                            Disabled="@(!RecordReady)" OnClick="@(async () => await ToggleRecordAsync())" />
+                    <Button Type="@ButtonType.Text" Size="@ButtonSize.Small" Icon="pause-circle" Style="color:#cfd8e3;" Disabled="@(!HasActiveStream)" OnClick="@(async () => await StopSlotAsync(ActiveSlot!))" />
+                    <span style="color:#5a6675;margin:0 4px;">|</span>
+                    @foreach (var n in _screenOptions)
+                    {
+                        <Button Type="@(n == _screen ? ButtonType.Primary : ButtonType.Text)" Size="@ButtonSize.Small"
+                                Style="@(n == _screen ? "" : "color:#cfd8e3;")"
+                                OnClick="@(() => ChangeScreen(n))">@n</Button>
+                    }
+                    <span style="color:#5a6675;margin:0 4px;">|</span>
+                    <Button Type="@ButtonType.Text" Size="@ButtonSize.Small" Icon="expand" Style="color:#cfd8e3;" OnClick="Fullscreen" />
+                </Space>
+            </div>
+        </Card>
+    </div>
+</div>
+
+<Modal Title="@($"快照 - {_snapTitle}")"
+       Visible="@_snapVisible"
+       Footer="null"
+       OnCancel="CloseSnap"
+       Width="640">
+    @if (_snapVisible)
+    {
+        <img src="@_snapUrl" style="width:100%;border-radius:6px;" alt="快照" />
+    }
+</Modal>
+
+@* 设备分组管理 *@
+<Modal Title="@("分组管理")"
+       Visible="@_groupManagerVisible"
+       Footer="null"
+       OnCancel="CloseGroupManager"
+       Width="560">
+    <div style="display:flex;gap:8px;margin-bottom:12px;">
+        <Input @bind-Value="_newGroupName" Placeholder="新分组名称（如 一号楼）" OnPressEnter="@(async () => await CreateGroupAsync())" />
+        <Button Type="@ButtonType.Primary" Loading="_groupSaving" OnClick="@(async () => await CreateGroupAsync())">添加</Button>
+    </div>
+    @if (_customGroups.Count == 0)
+    {
+        <div style="text-align:center;padding:16px;color:#9aa5b1;">暂无分组，先添加一个</div>
+    }
+    else
+    {
+        @foreach (var g in _customGroups)
+        {
+            <div class="pgroup-row">
+                @if (_editingGroupId == g.Id)
+                {
+                    <Input @bind-Value="_editGroupName" Size="@InputSize.Small" Style="flex:1;" OnPressEnter="@(async () => await RenameGroupAsync(g.Id))" />
+                    <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" Loading="_groupSaving" OnClick="@(async () => await RenameGroupAsync(g.Id))">保存</Button>
+                    <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="CancelRenameGroup">取消</Button>
+                }
+                else
+                {
+                    <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">@g.Name</span>
+                    <span style="color:#9aa5b1;font-size:12px;">@g.Members.Count 台设备</span>
+                    <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => StartRenameGroup(g))">重命名</Button>
+                    <Popconfirm Title="删除该分组？组内设备将变为未分组。" OkText="删除" CancelText="取消" OnConfirm="@(async () => await DeleteGroupAsync(g.Id))">
+                        <Button Type="@ButtonType.Link" Danger="true" Size="@ButtonSize.Small">删除</Button>
+                    </Popconfirm>
+                }
+            </div>
+        }
+    }
+</Modal>
+
+@* 单个设备归属分组 *@
+<Modal Title="@($"设置分组 - {_assignLabel}")"
+       Visible="@_assignVisible"
+       OkText="@("确定")"
+       CancelText="@("取消")"
+       ConfirmLoading="_assignSaving"
+       OnOk="@(async () => await SaveAssignAsync())"
+       OnCancel="CloseAssign">
+    <RadioGroup @bind-Value="_assignGroupValue" Style="display:flex;flex-direction:column;gap:8px;">
+        <Radio Value="@("0")">未分组</Radio>
+        @foreach (var g in _customGroups)
+        {
+            <Radio Value="@g.Id.ToString()">@g.Name</Radio>
+        }
+    </RadioGroup>
+    @if (_customGroups.Count == 0)
+    {
+        <div style="margin-top:8px;color:#9aa5b1;font-size:12px;">暂无自定义分组，可先通过「分组管理」创建</div>
+    }
+</Modal>
+
+<style>
+    .ptree-group { display:flex;align-items:center;gap:4px;padding:4px 4px;cursor:pointer;color:#2d3748;font-weight:500;user-select:none; }
+    .ptree-item { display:flex;align-items:center;gap:6px;padding:3px 4px 3px 18px;cursor:pointer;border-radius:4px;color:#2d3748;font-size:13px;user-select:none; }
+    .ptree-item:hover { background:#f0f3f7; }
+    .ptree-item-active { background:#e8eef5;color:#4a6b8a; }
+    .ptree-dot { width:8px;height:8px;border-radius:50%;background:#c0c8d0;flex-shrink:0; }
+    .ptree-dot-online { background:#52c41a; }
+    .ptree-act { color:#c0c8d0;font-size:12px;padding:0 2px;flex-shrink:0; }
+    .ptree-act:hover { color:#4a6b8a; }
+    .ptree-empty { padding:3px 4px 3px 18px;color:#9aa5b1;font-size:12px; }
+    .pgroup-row { display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid #f0f3f7; }
+</style>
+
+@code {
+    private class TreeItem
+    {
+        public string Kind { get; set; } = "";   // pull | gb
+        public string App { get; set; } = "";    // pull: 应用名；gb: 设备编码
+        public string Stream { get; set; } = ""; // pull: 流 ID；gb: 通道编码
+        public string Label { get; set; } = "";
+        public string Protocol { get; set; } = ""; // pull: RTSP / RTMP / HTTP-FLV
+        public bool Online { get; set; }
+        public bool IsProxy { get; set; }
+    }
+
+    private class TreeGroup
+    {
+        public string Key { get; set; } = "";
+        public string Name { get; set; } = "";
+        public bool Expanded { get; set; } = true;
+        public List<TreeItem> Items { get; set; } = new();
+
+        /// <summary>自定义分组 ID（0 = 未分组 / 协议分组）</summary>
+        public int Id { get; set; }
+    }
+
+    private class Slot
+    {
+        public int Index { get; set; }
+        public string Kind { get; set; } = ""; // "" | pull | gb
+        public string App { get; set; } = "";
+        public string Stream { get; set; } = "";
+        public string Label { get; set; } = "";
+        public bool Online { get; set; }
+        /// <summary>线上流实际视频编码：H264 / H265 / 空（未知）。</summary>
+        public string Codec { get; set; } = "";
+    }
+
+    /// <summary>深链：/player?app=live&amp;stream=101（设备列表「播放」直达）。</summary>
+    [SupplyParameterFromQuery(Name = "app")]
+    public string? QueryApp { get; set; }
+
+    [SupplyParameterFromQuery(Name = "stream")]
+    public string? QueryStream { get; set; }
+
+    private static readonly int[] _screenOptions = { 1, 4, 9, 16 };
+    private List<Slot> _slots = new();
+    private int _screen = 4;
+    private int _cols => (int)Math.Sqrt(_screen);
+    private int _activeIndex;
+
+    private string _treeTab = "tree";
+    private bool _loadingTree;
+    private List<TreeGroup> _treeGroups = new();
+    private List<TreeGroup> _protoGroups = new();
+    private List<DeviceGroupDto> _customGroups = new();
+    private Dictionary<string, long> _speedMap = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, bool> _proxyOnlineMap = new(StringComparer.OrdinalIgnoreCase);
+
+    private bool _groupManagerVisible;
+    private bool _groupSaving;
+    private string _newGroupName = "";
+    private int? _editingGroupId;
+    private string _editGroupName = "";
+
+    private bool _assignVisible;
+    private bool _assignSaving;
+    private TreeItem? _assignItem;
+    private string _assignLabel = "";
+    private string _assignGroupValue = "0";
+
+    private bool _ptzOpen = true;
+
+    private bool _snapVisible;
+    private string _snapUrl = "";
+    private string _snapTitle = "";
+
+    private readonly Queue<(int Index, string Url, string Codec)> _pendingPlays = new();
+
+    private Slot? ActiveSlot => _slots.FirstOrDefault(s => s.Index == _activeIndex);
+    private bool HasActiveStream => ActiveSlot?.Kind != "" && ActiveSlot != null;
+    private bool RecordReady => ActiveSlot?.Kind == "pull";
+    private bool PtzReady => ActiveSlot?.Kind == "gb";
+    private string ActiveLabel => ActiveSlot is { Kind: not "" } ? ActiveSlot.Label : "未选择通道";
+
+    private string ActiveCodec => ActiveSlot is { Kind: not "" } ? ActiveSlot.Codec : "";
+    private string ActiveSpeed
+    {
+        get
+        {
+            var slot = ActiveSlot;
+            if (slot is not { Kind: "pull" }) return "0 bps";
+            return _speedMap.TryGetValue($"{slot.App}/{slot.Stream}", out var speed) && speed > 0
+                ? FormatSpeed(speed)
+                : "0 bps";
+        }
+    }
+
+    private DotNetObjectReference<Player>? _dotNetRef;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _dotNetRef = DotNetObjectReference.Create(this);
+        BuildSlots();
+        await LoadTreeAsync();
+        await PlayFromQueryAsync();
+    }
+
+    /// <summary>
+    /// 设备列表「播放」深链：带 ?app=&amp;stream= 进入时，直接把第 1 个画面拨到该流。
+    /// 流不在线（按需拉流）时 PlayItemAsync 会先动态拉起再播放。
+    /// </summary>
+    private async Task PlayFromQueryAsync()
+    {
+        if (string.IsNullOrWhiteSpace(QueryApp) || string.IsNullOrWhiteSpace(QueryStream)) return;
+
+        var label = $"{QueryApp}/{QueryStream}";
+        var item = new TreeItem
+        {
+            Kind = "pull",
+            App = QueryApp,
+            Stream = QueryStream,
+            Label = label,
+            Online = _proxyOnlineMap.TryGetValue(label, out var online) && online,
+            IsProxy = true,
+        };
+        _activeIndex = 0;
+        await PlayItemAsync(item);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        while (_pendingPlays.Count > 0)
+        {
+            var (index, url, codec) = _pendingPlays.Dequeue();
+            // 按线上流的实际编码选择解码路径：H.265 → WASM 软解，H.264 → MSE 硬解
+            await JS.InvokeVoidAsync("apiextPlayer.create", index, $"player-{index}", _dotNetRef, codec);
+            await JS.InvokeVoidAsync("apiextPlayer.play", index, url);
+        }
+    }
+
+    /// <summary>播放器（jessibuca）失败回调：给出可操作的原因提示，避免只留黑屏。</summary>
+    [JSInvokable]
+    public Task OnPlayerError(string slotId, string message)
+    {
+        Message.Error($"画面 {slotId} 播放失败：{message}。若为令牌过期请刷新页面重新获取地址。");
+        return Task.CompletedTask;
+    }
+
+    public void Dispose() => _dotNetRef?.Dispose();
+
+    private void BuildSlots()
+    {
+        _slots = Enumerable.Range(0, _screen).Select(i => new Slot { Index = i }).ToList();
+        if (_activeIndex >= _screen) _activeIndex = 0;
+    }
+
+    private async Task LoadTreeAsync()
+    {
+        _loadingTree = true;
+        try
+        {
+            var pullItems = new List<TreeItem>();
+            var proxies = await PullProxy.ListAsync();
+            foreach (var p in proxies)
+            {
+                _speedMap[$"{p.App}/{p.Stream}"] = p.BytesSpeed;
+                _proxyOnlineMap[$"{p.App}/{p.Stream}"] = p.IsOnline;
+                pullItems.Add(new TreeItem
+                {
+                    Kind = "pull",
+                    App = p.App,
+                    Stream = p.Stream,
+                    Label = $"{p.App}/{p.Stream}",
+                    Protocol = StreamProtocol.Detect(p.Url),
+                    Online = p.IsOnline,
+                    IsProxy = true,
+                });
+            }
+
+            var gbItems = new List<TreeItem>();
+            var devices = await Gb.GetDevicesAsync();
+            foreach (var d in devices)
+            {
+                var channels = await Gb.GetChannelsAsync(d.DeviceId);
+                foreach (var c in channels)
+                {
+                    gbItems.Add(new TreeItem
+                    {
+                        Kind = "gb",
+                        App = d.DeviceId,
+                        Stream = c.ChannelId,
+                        Label = $"{d.Name}/{c.Name}",
+                        Online = d.Online && c.Status == "ON",
+                    });
+                }
+            }
+
+            // 设备树：按自定义分组展示，未归属分组的设备归入「未分组」
+            var groups = new List<DeviceGroupDto>();
+            try { groups = await DeviceGroups.ListAsync(); } catch { }
+            _customGroups = groups;
+
+            var all = pullItems.Concat(gbItems).ToList();
+            var memberGroup = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var g in groups)
+            {
+                foreach (var m in g.Members)
+                {
+                    memberGroup[DeviceGroupService.MemberKey(m.Kind, m.App, m.Stream)] = g.Id;
+                }
+            }
+
+            var prevExpanded = _treeGroups.ToDictionary(g => g.Key, g => g.Expanded);
+            _treeGroups = new List<TreeGroup>();
+            foreach (var g in groups)
+            {
+                var key = $"g{g.Id}";
+                var items = all.Where(i =>
+                    memberGroup.TryGetValue(DeviceGroupService.MemberKey(i.Kind, i.App, i.Stream), out var gid) && gid == g.Id).ToList();
+                _treeGroups.Add(new TreeGroup
+                {
+                    Key = key,
+                    Id = g.Id,
+                    Name = g.Name,
+                    Items = items,
+                    Expanded = !prevExpanded.TryGetValue(key, out var expanded) || expanded,
+                });
+            }
+
+            var ungrouped = all.Where(i =>
+                !memberGroup.ContainsKey(DeviceGroupService.MemberKey(i.Kind, i.App, i.Stream))).ToList();
+            if (ungrouped.Count > 0)
+            {
+                _treeGroups.Add(new TreeGroup
+                {
+                    Key = "ungrouped",
+                    Name = "未分组",
+                    Items = ungrouped,
+                    Expanded = !prevExpanded.TryGetValue("ungrouped", out var expanded) || expanded,
+                });
+            }
+
+            _protoGroups = new List<TreeGroup>
+            {
+                new() { Key = "RTSP", Name = "RTSP", Items = pullItems.Where(i => i.Protocol == "RTSP").ToList() },
+                new() { Key = "RTMP", Name = "RTMP", Items = pullItems.Where(i => i.Protocol == "RTMP").ToList() },
+                new() { Key = "HTTP-FLV", Name = "HTTP-FLV", Items = pullItems.Where(i => i.Protocol == "HTTP-FLV").ToList() },
+                new() { Key = "GB28181", Name = "GB28181", Items = gbItems },
+            };
+            _protoGroups.RemoveAll(g => g.Items.Count == 0);
+        }
+        catch
+        {
+            _treeGroups = new();
+            _protoGroups = new();
+        }
+        finally
+        {
+            _loadingTree = false;
+        }
+    }
+
+    private void ToggleGroup(string key)
+    {
+        var g = _treeGroups.FirstOrDefault(x => x.Key == key) ?? _protoGroups.FirstOrDefault(x => x.Key == key);
+        if (g != null) g.Expanded = !g.Expanded;
+    }
+
+    private void OpenGroupManager()
+    {
+        _newGroupName = "";
+        _editingGroupId = null;
+        _editGroupName = "";
+        _groupManagerVisible = true;
+    }
+
+    private void CloseGroupManager() => _groupManagerVisible = false;
+
+    private async Task CreateGroupAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_newGroupName))
+        {
+            Message.Warning("请输入分组名称");
+            return;
+        }
+
+        _groupSaving = true;
+        var (ok, error, _) = await DeviceGroups.CreateAsync(_newGroupName);
+        _groupSaving = false;
+        if (ok)
+        {
+            _newGroupName = "";
+            Message.Success("已添加分组");
+            await LoadTreeAsync();
+        }
+        else
+        {
+            Message.Error(error ?? "添加失败");
+        }
+    }
+
+    private void StartRenameGroup(DeviceGroupDto g)
+    {
+        _editingGroupId = g.Id;
+        _editGroupName = g.Name;
+    }
+
+    private void CancelRenameGroup()
+    {
+        _editingGroupId = null;
+        _editGroupName = "";
+    }
+
+    private async Task RenameGroupAsync(int id)
+    {
+        _groupSaving = true;
+        var (ok, error) = await DeviceGroups.RenameAsync(id, _editGroupName);
+        _groupSaving = false;
+        if (ok)
+        {
+            CancelRenameGroup();
+            Message.Success("已重命名");
+            await LoadTreeAsync();
+        }
+        else
+        {
+            Message.Error(error ?? "重命名失败");
+        }
+    }
+
+    private async Task DeleteGroupAsync(int id)
+    {
+        var (ok, error) = await DeviceGroups.DeleteAsync(id);
+        if (ok)
+        {
+            if (_editingGroupId == id) CancelRenameGroup();
+            Message.Success("已删除分组");
+            await LoadTreeAsync();
+        }
+        else
+        {
+            Message.Error(error ?? "删除失败");
+        }
+    }
+
+    private void OpenAssign(TreeItem item)
+    {
+        _assignItem = item;
+        _assignLabel = item.Label;
+        var group = _customGroups.FirstOrDefault(g =>
+            g.Members.Any(m => m.Kind == item.Kind && m.App == item.App && m.Stream == item.Stream));
+        _assignGroupValue = group == null ? "0" : group.Id.ToString();
+        _assignVisible = true;
+    }
+
+    private void CloseAssign() => _assignVisible = false;
+
+    private async Task SaveAssignAsync()
+    {
+        if (_assignItem == null)
+        {
+            _assignVisible = false;
+            return;
+        }
+
+        var groupId = int.TryParse(_assignGroupValue, out var parsed) && parsed > 0 ? parsed : (int?)null;
+        _assignSaving = true;
+        var (ok, error) = await DeviceGroups.SetMemberGroupAsync(_assignItem.Kind, _assignItem.App, _assignItem.Stream, groupId);
+        _assignSaving = false;
+        if (ok)
+        {
+            _assignVisible = false;
+            await LoadTreeAsync();
+        }
+        else
+        {
+            Message.Error(error ?? "设置失败");
+        }
+    }
+
+    private bool IsActive(TreeItem item)
+    {
+        var slot = ActiveSlot;
+        if (slot == null) return false;
+        return slot.Kind == item.Kind && slot.App == item.App && slot.Stream == item.Stream;
+    }
+
+    private void SetActive(int index) => _activeIndex = index;
+
+    private async Task PlayItemAsync(TreeItem item)
+    {
+        var slot = ActiveSlot;
+        if (slot == null) return;
+        if (!item.Online && item.Kind == "gb")
+        {
+            Message.Warning("设备离线，无法点播");
+            return;
+        }
+
+        await ClearSlotAsync(slot);
+
+        if (item.Kind == "pull")
+        {
+            // 按需断流的流：先动态拉流，等待上线
+            if (!item.Online)
+            {
+                await PullProxy.EnsureStreamAsync(item.App, item.Stream);
+                for (var i = 0; i < 5; i++)
+                {
+                    await Task.Delay(1000);
+                    var resp = await Zlm.GetMediaListAsync(null, item.App, item.Stream);
+                    if (resp.Code == 0 && resp.Data is { Count: > 0 }) break;
+                }
+            }
+
+            slot.Kind = "pull";
+            slot.App = item.App;
+            slot.Stream = item.Stream;
+            slot.Label = item.Label;
+            slot.Online = item.Online || _proxyOnlineMap.TryGetValue($"{item.App}/{item.Stream}", out var on) && on;
+            slot.Codec = await ResolveCodecAsync(null, item.App, item.Stream);
+            _pendingPlays.Enqueue((slot.Index, Zlm.BuildFlvUrl(item.App, item.Stream), slot.Codec));
+        }
+        else
+        {
+            var (ok, error, url) = await Gb.StartPlayAsync(item.Stream);
+            if (!ok)
+            {
+                Message.Error(error ?? "点播失败");
+                return;
+            }
+            slot.Kind = "gb";
+            slot.App = item.App;
+            slot.Stream = item.Stream;
+            slot.Label = item.Label;
+            slot.Online = true;
+            // 国标点播流在 ZLM 侧固定落在 rtp/{通道号}
+            slot.Codec = await ResolveCodecAsync(null, "rtp", item.Stream);
+            _pendingPlays.Enqueue((slot.Index, url!, slot.Codec));
+        }
+
+        StateHasChanged();
+    }
+
+    private async Task ChangeScreen(int n)
+    {
+        if (n == _screen) return;
+        await JS.InvokeVoidAsync("apiextPlayer.destroyAll");
+        _screen = n;
+        BuildSlots();
+    }
+
+    private async Task ClearSlotAsync(Slot slot)
+    {
+        if (slot.Kind != "")
+        {
+            await JS.InvokeVoidAsync("apiextPlayer.destroy", slot.Index);
+            if (slot.Kind == "gb")
+            {
+                try { await Gb.StopPlayAsync(slot.Stream); } catch { }
+            }
+        }
+        slot.Kind = "";
+        slot.App = "";
+        slot.Stream = "";
+        slot.Label = "";
+        slot.Online = false;
+        slot.Codec = "";
+    }
+
+    /// <summary>
+    /// 取线上流的实际视频编码（H264 / H265）。刚点播的流轨道可能还没 ready，
+    /// 因此短轮询几次；拿不到返回空串，播放器按未知编码走默认（MSE + autoWasm 兜底）。
+    /// </summary>
+    private async Task<string> ResolveCodecAsync(string? vhost, string app, string stream)
+    {
+        for (var i = 0; i < 5; i++)
+        {
+            try
+            {
+                var codec = await Zlm.GetVideoCodecAsync(vhost, app, stream);
+                if (!string.IsNullOrEmpty(codec)) return codec;
+            }
+            catch (Exception ex)
+            {
+                // 探测失败不影响播放，按未知编码处理
+                Message.Warning($"编码探测失败：{ex.Message}");
+                return "";
+            }
+            await Task.Delay(400);
+        }
+        return "";
+    }
+
+    private static string FormatCodec(string codec)
+        => codec switch { "H265" => "H.265", "H264" => "H.264", _ => codec };
+
+    private async Task StopSlotAsync(Slot slot)
+    {
+        if (slot == null || slot.Kind == "") return;
+        await ClearSlotAsync(slot);
+    }
+
+    private async Task Ptz(PtzCommand cmd)
+    {
+        var slot = ActiveSlot;
+        if (slot is not { Kind: "gb" }) return;
+        await Gb.PtzControlAsync(slot.Stream, cmd, 5);
+    }
+
+    private void OpenSnap()
+    {
+        var slot = ActiveSlot;
+        if (slot is not { Kind: not "" }) return;
+        _snapTitle = slot.Label;
+        // 国标点播流的 ZLM app 固定为 rtp，普通拉流用自身的 app/stream
+        _snapUrl = slot.Kind == "gb"
+            ? Zlm.BuildSnapUrl("rtp", slot.Stream)
+            : Zlm.BuildSnapUrl(slot.App, slot.Stream);
+        _snapVisible = true;
+    }
+
+    private void CloseSnap() => _snapVisible = false;
+
+    private async Task ToggleRecordAsync()
+    {
+        var slot = ActiveSlot;
+        if (slot is not { Kind: "pull" }) return;
+        try
+        {
+            var rec = await Zlm.IsRecordingAsync(slot.App, slot.Stream);
+            if (rec.Code == 0 && rec.Status)
+            {
+                await Zlm.StopRecordAsync(slot.App, slot.Stream);
+            }
+            else
+            {
+                var resp = await Zlm.StartRecordAsync(slot.App, slot.Stream);
+                if (resp.Code != 0)
+                {
+                    return;
+                }
+            }
+        }
+        catch
+        {
+            // 忽略
+        }
+    }
+
+    private async Task Fullscreen()
+    {
+        await JS.InvokeVoidAsync("eval",
+            "(document.getElementById('player-grid')||document.documentElement).requestFullscreen()");
+    }
+
+    private static string FormatSpeed(long bytesPerSecond)
+    {
+        if (bytesPerSecond >= 1024 * 1024) return $"{bytesPerSecond / 1024.0 / 1024.0:F2} MB/s";
+        if (bytesPerSecond >= 1024) return $"{bytesPerSecond / 1024.0:F1} KB/s";
+        return $"{bytesPerSecond} B/s";
+    }
+}

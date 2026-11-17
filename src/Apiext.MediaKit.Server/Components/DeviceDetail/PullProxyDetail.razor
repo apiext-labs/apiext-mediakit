@@ -1,0 +1,412 @@
+@namespace Apiext.MediaKit.Server.Components.DeviceDetail
+@inject PullProxyService PullProxy
+@inject ZlmService Zlm
+@inject MessageService Message
+
+@if (_loading)
+{
+    <div style="text-align:center;padding:32px;"><Spin /></div>
+}
+else if (_row != null)
+{
+    <div style="display:flex;flex-direction:column;gap:24px;">
+        @* 操作（顶部） *@
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <Space>
+                <Text>录像</Text>
+                <Switch Checked="@_row.EnableRecord" OnChange="@(async (bool v) => await ToggleRecord(v))" />
+            </Space>
+            <Space>
+                <Text>按需拉流</Text>
+                <Switch Checked="@_row.EnableOnDemand" OnChange="@(async (bool v) => await ToggleOnDemand(v))" />
+            </Space>
+            <span style="width:1px;height:20px;background:#f0f0f0;margin:0 4px;"></span>
+            <Popconfirm Title="@(_row.EnableOnDemand
+                              ? "该流为按需拉流，无人观看时会被自动断流。重新拉流会先断开当前观看者，继续？"
+                              : "重新拉流会先断开当前所有观看者，确定继续？")"
+                        OkText="重新拉流" CancelText="取消"
+                        OnConfirm="@(async () => await RestartStream())">
+                <Button Icon="reload" Loading="_restarting">重新拉流</Button>
+            </Popconfirm>
+            <Button Icon="folder-open" OnClick="OpenRecords">录像文件</Button>
+            <Button Icon="camera" OnClick="OpenSnap">截图</Button>
+            <Button Icon="edit" OnClick="OpenEdit">编辑</Button>
+            <Popconfirm Title="确定删除该拉流代理？" OkText="删除" CancelText="取消" OnConfirm="@(async () => await DeleteProxy())">
+                <Button Icon="delete" Danger="true">删除</Button>
+            </Popconfirm>
+        </div>
+
+        @* 基本信息 *@
+        <div>
+            <div style="margin-bottom:10px;"><Text Strong="true">基本信息</Text></div>
+            <Descriptions Column="3" Bordered="true">
+                <DescriptionsItem Title="应用">@_row.App</DescriptionsItem>
+                <DescriptionsItem Title="流 ID">@_row.Stream</DescriptionsItem>
+                <DescriptionsItem Title="状态">
+                    <Tag Color="@(_row.IsOnline ? "success" : "default")">@_row.StatusText</Tag>
+                    @if (_row.IsRecording)
+                    {
+                        <Tag Color="@("processing")">录像</Tag>
+                    }
+                </DescriptionsItem>
+                <DescriptionsItem Title="观众数">@_row.TotalReaderCount</DescriptionsItem>
+                <DescriptionsItem Title="速率">@_row.SpeedText</DescriptionsItem>
+                <DescriptionsItem Title="存活时长">@FormatAlive(_row.AliveSecond)</DescriptionsItem>
+                <DescriptionsItem Title="取流模式">
+                    @if (_row.PullMode == "ffmpeg")
+                    {
+                        <Tag Color="@("orange")">兼容</Tag>
+                        if (_row.OutputCodec is "h264" or "h265")
+                        {
+                            <span style="color:#718096;font-size:12px;">@_row.OutputCodec.ToUpperInvariant()</span>
+                        }
+                    }
+                    else
+                    {
+                        <Tag>标准</Tag>
+                    }
+                </DescriptionsItem>
+                <DescriptionsItem Title="源流地址" Span="2">
+                    @* 默认掩码，点眼睛图标查看明文（地址里通常带摄像头账号密码） *@
+                    <SecretUrlText Value="@_row.Url" />
+                </DescriptionsItem>
+            </Descriptions>
+        </div>
+
+        @* 播放地址 *@
+        <div>
+            <div style="margin-bottom:10px;"><Text Strong="true">播放地址</Text></div>
+            <PlayUrlList App="@_row.App" Stream="@_row.Stream" />
+        </div>
+    </div>
+}
+else
+{
+    <div style="text-align:center;padding:32px;color:#718096;">未找到该拉流代理（可能已被删除）</div>
+}
+
+<Modal Title="@($"快照 - {_snapTitle}")"
+       Visible="@_snapVisible"
+       Footer="null"
+       OnCancel="CloseSnap"
+       Width="640">
+    @if (_snapVisible)
+    {
+        <img src="@_snapUrl" style="width:100%;border-radius:6px;background:#f5f6f8;" alt="快照" />
+        <div style="margin-top:8px;color:#9aa5b1;font-size:12px;">画面长时间空白或显示破图，说明流已离线或抓拍失败，请先在「播放」中确认流在线。</div>
+    }
+</Modal>
+
+<Modal Title="编辑拉流代理"
+       Visible="@_editVisible"
+       OkText="@("保存")"
+       CancelText="@("取消")"
+       ConfirmLoading="@_editLoading"
+       OnOk="@(async () => await SubmitEdit())"
+       OnCancel="CloseEdit">
+    <div style="display:flex;flex-direction:column;gap:16px;">
+        <div style="color:#2d3748;">
+            <Text Strong="true">@_row?.App</Text> / <Text Strong="true">@_row?.Stream</Text>
+            <Text Type="@TextElementType.Secondary">（应用名 / 流 ID 不可修改）</Text>
+        </div>
+        <Input Placeholder="源流地址 rtsp://…" @bind-Value="_editUrl" />
+        <div>
+            <div style="margin-bottom:6px;"><Text Strong="true">取流模式</Text></div>
+            <RadioGroup @bind-Value="_editPullMode" ButtonStyle="@RadioButtonStyle.Solid">
+                <Radio RadioButton="true" Value="@("native")">标准</Radio>
+                <Radio RadioButton="true" Value="@("ffmpeg")">兼容</Radio>
+            </RadioGroup>
+            <div style="margin-top:6px;color:#9aa5b1;font-size:12px;">默认用「标准」即可；只有取流失败、画面异常（黑屏、花屏、无声）时才换成「兼容」。</div>
+        </div>
+        @if (_editPullMode == "ffmpeg")
+        {
+            <div>
+                <div style="margin-bottom:6px;"><Text Strong="true">输出编码</Text></div>
+                <RadioGroup @bind-Value="_editOutputCodec" ButtonStyle="@RadioButtonStyle.Solid">
+                    <Radio RadioButton="true" Value="@("copy")">直通</Radio>
+                    <Radio RadioButton="true" Value="@("h264")">H.264</Radio>
+                    <Radio RadioButton="true" Value="@("h265")">H.265</Radio>
+                </RadioGroup>
+                <div style="margin-top:6px;color:#9aa5b1;font-size:12px;">直通：不转码、画质无损；选 H.264 / H.265 会重新编码，兼容性更好但更耗 CPU。</div>
+            </div>
+        }
+        @if (_row != null && !string.IsNullOrEmpty(_editPullMode) && _editPullMode != _row.PullMode)
+        {
+            <div style="color:#d46b08;font-size:12px;">切换取流模式会先断开当前观看，再按新模式重新连接，通常需要几秒到 20 秒。</div>
+        }
+    </div>
+</Modal>
+
+<Drawer Title="@($"录像文件 - {_row?.App}/{_row?.Stream}")"
+        Width="640"
+        Visible="@_recordDrawerVisible"
+        OnClose="CloseRecords">
+    <Space Style="margin-bottom:12px;">
+        <DatePicker @bind-Value="_recordDate" />
+        <Button Type="@ButtonType.Primary" Size="@ButtonSize.Small" OnClick="@(async () => await LoadRecords())">查询</Button>
+    </Space>
+    <Table DataSource="_recordFiles" Loading="_recordLoading" Size="@TableSize.Small">
+        <AntDesign.Column Title="文件名" @bind-Field="@context.FileName" />
+        <ActionColumn Title="操作" Width="90">
+            <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => PlayRecord(context.FileName))">播放</Button>
+        </ActionColumn>
+    </Table>
+</Drawer>
+
+<Modal Title="@($"录像回放 - {_videoTitle}")"
+       Visible="@_videoVisible"
+       Footer="null"
+       OnCancel="CloseVideo"
+       Width="720">
+    @if (_videoVisible)
+    {
+        <video src="@_videoUrl" controls autoplay style="width:100%;border-radius:6px;background:#000;"></video>
+        <div style="margin-top:8px;color:#9aa5b1;font-size:12px;">该地址是临时签名地址（约 30 分钟有效）；若提示无法播放，可能是录像已清理或签名已过期，重新查询即可。</div>
+    }
+</Modal>
+
+@code {
+    [Parameter] public string App { get; set; } = "";
+    [Parameter] public string Stream { get; set; } = "";
+    [Parameter] public EventCallback OnChanged { get; set; }
+    [Parameter] public EventCallback OnDeleted { get; set; }
+
+    private bool _loading;
+    private ProxyRow? _row;
+
+    private bool _snapVisible;
+    private string _snapUrl = "";
+    private string _snapTitle = "";
+
+    private bool _editVisible;
+    private bool _editLoading;
+    private string _editUrl = "";
+    private string _editPullMode = "native";
+    private string _editOutputCodec = "copy";
+
+    private bool _restarting;
+
+    private bool _recordDrawerVisible;
+    private DateTime? _recordDate;
+    private List<RecordFileRow> _recordFiles = new();
+    private bool _recordLoading;
+
+    private bool _videoVisible;
+    private string _videoUrl = "";
+    private string _videoTitle = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            var rows = await PullProxy.ListAsync();
+            _row = rows.FirstOrDefault(r => r.App == App && r.Stream == Stream);
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载详情失败：{ex.Message}");
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task ToggleRecord(bool enable)
+    {
+        if (_row == null) return;
+        var (ok, error) = await PullProxy.SetRecordAsync(_row.App, _row.Stream, enable);
+        if (ok)
+        {
+            Message.Success(enable ? "已开始录像" : "已停止录像");
+            await LoadAsync();
+            await OnChanged.InvokeAsync();
+        }
+        else
+        {
+            Message.Error(error ?? "操作失败");
+            await LoadAsync();   // 失败时重载，避免开关显示与真实状态不一致
+        }
+    }
+
+    private async Task ToggleOnDemand(bool enable)
+    {
+        if (_row == null) return;
+        var (ok, error) = await PullProxy.SetOnDemandAsync(_row.App, _row.Stream, enable);
+        if (ok)
+        {
+            Message.Success(enable ? "已开启按需拉流" : "已关闭按需拉流");
+            await LoadAsync();
+            await OnChanged.InvokeAsync();
+        }
+        else
+        {
+            Message.Error(error ?? "操作失败");
+            await LoadAsync();   // 失败时重载，避免开关显示与真实状态不一致
+        }
+    }
+
+    private async Task RestartStream()
+    {
+        if (_row == null || _restarting) return;
+
+        _restarting = true;
+        StateHasChanged();
+        // 先让按钮进入 loading 再做长操作（ffmpeg 重建要等 ZLM 判定，通常 20 秒上下）
+        await Task.Yield();
+        try
+        {
+            var (ok, error) = await PullProxy.RestartAsync(_row.App, _row.Stream);
+            if (ok)
+            {
+                Message.Success("已重新拉流");
+                await LoadAsync();
+                await OnChanged.InvokeAsync();
+            }
+            else
+            {
+                Message.Error(error ?? "重新拉流失败");
+                await LoadAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"重新拉流失败：{ex.Message}");
+            await LoadAsync();
+        }
+        finally
+        {
+            _restarting = false;
+        }
+    }
+
+    private void OpenSnap()
+    {
+        if (_row == null) return;
+        _snapTitle = $"{_row.App}/{_row.Stream}";
+        _snapUrl = Zlm.BuildSnapUrl(_row.App, _row.Stream);
+        _snapVisible = true;
+    }
+
+    private void CloseSnap() => _snapVisible = false;
+
+    private void OpenEdit()
+    {
+        if (_row == null) return;
+        _editUrl = _row.Url;
+        _editPullMode = _row.PullMode == "ffmpeg" ? "ffmpeg" : "native";
+        _editOutputCodec = string.IsNullOrEmpty(_row.OutputCodec) ? "copy" : _row.OutputCodec;
+        _editVisible = true;
+    }
+
+    private void CloseEdit() => _editVisible = false;
+
+    private async Task SubmitEdit()
+    {
+        if (_row == null) return;
+        if (string.IsNullOrWhiteSpace(_editUrl))
+        {
+            Message.Warning("请填写源流地址");
+            return;
+        }
+
+        var modeChanged = _editPullMode != _row.PullMode;
+
+        _editLoading = true;
+        var (ok, error) = await PullProxy.UpdateAsync(
+            _row.Vhost, _row.App, _row.Stream, _editUrl.Trim(), null, _editOutputCodec, _editPullMode);
+        _editLoading = false;
+
+        if (ok)
+        {
+            _editVisible = false;
+            Message.Success(modeChanged
+                ? $"已切换到「{(_editPullMode == "ffmpeg" ? "兼容" : "标准")}」取流模式并重新连接"
+                : "已保存");
+            await LoadAsync();
+            await OnChanged.InvokeAsync();
+        }
+        else
+        {
+            Message.Error(error ?? "保存失败");
+        }
+    }
+
+    private async Task DeleteProxy()
+    {
+        if (_row == null) return;
+        var (ok, error) = await PullProxy.DeleteAsync(_row.Vhost, _row.App, _row.Stream);
+        if (ok)
+        {
+            Message.Success("已删除");
+            await OnDeleted.InvokeAsync();
+        }
+        else
+        {
+            Message.Error(error ?? "删除失败");
+        }
+    }
+
+    private void OpenRecords()
+    {
+        if (_row == null) return;
+        _recordDate = DateTime.Today;
+        _recordFiles = new();
+        _recordDrawerVisible = true;
+        _ = LoadRecords();
+    }
+
+    private void CloseRecords() => _recordDrawerVisible = false;
+
+    private async Task LoadRecords()
+    {
+        if (_row == null || _recordDate == null) return;
+        _recordLoading = true;
+        try
+        {
+            _recordFiles = (await PullProxy.GetRecordFilesAsync(_row.App, _row.Stream, _recordDate.Value.ToString("yyyy-MM-dd")))
+                .Select(f => new RecordFileRow(System.IO.Path.GetFileName(f))).ToList();
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"查询录像失败：{ex.Message}");
+            _recordFiles = new();
+        }
+        finally
+        {
+            _recordLoading = false;
+        }
+    }
+
+    private void PlayRecord(string fileName)
+    {
+        if (_row == null || _recordDate == null) return;
+        _videoTitle = fileName;
+        _videoUrl = Zlm.BuildRecordUrl(_row.App, _row.Stream, _recordDate.Value.ToString("yyyy-MM-dd"), fileName);
+        _videoVisible = true;
+    }
+
+    private void CloseVideo() => _videoVisible = false;
+
+    private static string FormatAlive(long seconds)
+    {
+        if (seconds <= 0) return "-";
+        var ts = TimeSpan.FromSeconds(seconds);
+        if (ts.TotalDays >= 1) return $"{(int)ts.TotalDays} 天 {ts.Hours} 小时";
+        if (ts.TotalHours >= 1) return $"{(int)ts.TotalHours} 小时 {ts.Minutes} 分";
+        if (ts.TotalMinutes >= 1) return $"{(int)ts.TotalMinutes} 分 {ts.Seconds} 秒";
+        return $"{ts.Seconds} 秒";
+    }
+
+    private class RecordFileRow
+    {
+        public RecordFileRow(string fileName) => FileName = fileName;
+        public string FileName { get; set; } = "";
+    }
+}

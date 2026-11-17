@@ -1,0 +1,210 @@
+@page "/monitor"
+@attribute [Authorize]
+@inject ZlmService Zlm
+@inject MessageService Message
+@inject IJSRuntime JS
+@implements IDisposable
+
+<Space Direction="@SpaceDirection.Vertical" Style="width:100%;">
+    <Card>
+        <Space Style="margin-bottom:16px;" Wrap="true">
+            <Button Icon="reload" Disabled="@_loading" OnClick="@(async () => await LoadAsync())">刷新</Button>
+            <Switch Checked="@_autoRefresh" OnChange="@((bool v) => _autoRefresh = v)" />
+            <Text Type="@TextElementType.Secondary">自动刷新（3 秒，后台标签页暂停）</Text>
+            <Text Type="@TextElementType.Secondary">最后更新：@_lastRefresh</Text>
+        </Space>
+        @if (_partialError != null)
+        {
+            <Alert Type="@AlertType.Warning" ShowIcon="true" Style="margin-bottom:12px;"
+                   Message="@($"部分数据获取失败：{_partialError}")" />
+        }
+
+        @if (_error != null)
+        {
+            <Alert Type="@AlertType.Error" ShowIcon="true" Message="无法连接流媒体服务" Description="@_error" />
+        }
+        else
+        {
+            <AntDesign.Row Gutter="16">
+                <AntDesign.Col Span="6"><Statistic Title="输入流" Value="@((double)_statistic.MediaSource)" /></AntDesign.Col>
+                <AntDesign.Col Span="6"><Statistic Title="输出流" Value="@((double)_statistic.MultiMediaSourceMuxer)" /></AntDesign.Col>
+                <AntDesign.Col Span="6"><Statistic Title="TCP 连接" Value="@((double)_statistic.TcpSession)" /></AntDesign.Col>
+                <AntDesign.Col Span="6"><Statistic Title="UDP 连接" Value="@((double)_statistic.UdpSession)" /></AntDesign.Col>
+                <AntDesign.Col Span="6"><Statistic Title="TCP 服务器" Value="@((double)_statistic.TcpServer)" /></AntDesign.Col>
+                <AntDesign.Col Span="6"><Statistic Title="UDP 服务器" Value="@((double)_statistic.UdpServer)" /></AntDesign.Col>
+                <AntDesign.Col Span="6"><Statistic Title="Socket" Value="@((double)_statistic.Socket)" /></AntDesign.Col>
+                <AntDesign.Col Span="6"><Statistic Title="TCP 客户端" Value="@((double)_statistic.TcpClient)" /></AntDesign.Col>
+            </AntDesign.Row>
+        }
+    </Card>
+
+    <Card Title="线程负载">
+        <AntDesign.Row Gutter="16">
+            <AntDesign.Col Span="12">
+                <Text Strong="true">事件轮询线程</Text>
+                @RenderLoads(_pollerLoads)
+            </AntDesign.Col>
+            <AntDesign.Col Span="12">
+                <Text Strong="true">工作线程</Text>
+                @RenderLoads(_workLoads)
+            </AntDesign.Col>
+        </AntDesign.Row>
+    </Card>
+
+    <Card Title="在线会话">
+        <Table DataSource="_sessions" Loading="_loading">
+            <AntDesign.Column Title="类型" TData="string">
+                <Tag Color="@("blue")">@ShortType(context.TypeId)</Tag>
+            </AntDesign.Column>
+            <AntDesign.Column Title="协议" Width="90" TData="string">
+                <Tag Color="@(context.Type == "tcp" ? "success" : "warning")">@context.Type</Tag>
+            </AntDesign.Column>
+            <AntDesign.Column Title="远端地址" TData="string">
+                @($"{context.PeerIp}:{context.PeerPort}")
+            </AntDesign.Column>
+            <AntDesign.Column Title="本地端口" Width="100" @bind-Field="@context.LocalPort" />
+            <AntDesign.Column Title="会话 ID" @bind-Field="@context.Id" />
+        </Table>
+    </Card>
+</Space>
+
+@code {
+    private bool _loading = true;
+    private bool _busy;
+    private bool _autoRefresh = true;
+    private string? _error;
+    private string? _partialError;
+    private string _lastRefresh = "-";
+    private StatisticData _statistic = new();
+    private List<ThreadLoadItem> _pollerLoads = new();
+    private List<ThreadLoadItem> _workLoads = new();
+    private List<SessionItem> _sessions = new();
+
+    private PeriodicTimer? _timer;
+    private CancellationTokenSource? _cts;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+        StartAutoRefresh();
+    }
+
+    private void StartAutoRefresh()
+    {
+        _cts = new CancellationTokenSource();
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+        _ = RunAutoRefresh(_cts.Token);
+    }
+
+    private async Task RunAutoRefresh(CancellationToken ct)
+    {
+        try
+        {
+            while (await _timer!.WaitForNextTickAsync(ct))
+            {
+                if (!_autoRefresh) continue;
+
+                // 标签页在后台时不打请求，避免空跑 ZLM 四个接口
+                var visibility = "";
+                await InvokeAsync(async () =>
+                {
+                    visibility = await JS.InvokeAsync<string>("eval", "document.visibilityState");
+                });
+                if (visibility == "hidden") continue;
+
+                await InvokeAsync(() => LoadAsync(silent: true));
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 组件销毁，正常退出
+        }
+    }
+
+    private async Task LoadAsync(bool silent = false)
+    {
+        // 手动刷新与 3 秒轮询互斥，避免两次请求交叉覆盖数据
+        if (_busy) return;
+        _busy = true;
+        if (!silent) _loading = true;
+        try
+        {
+            var statTask = Zlm.GetStatisticAsync();
+            var pollerTask = Zlm.GetThreadsLoadAsync();
+            var workTask = Zlm.GetWorkThreadsLoadAsync();
+            var sessionTask = Zlm.GetAllSessionAsync();
+
+            await Task.WhenAll(statTask, pollerTask, workTask, sessionTask);
+
+            var errors = new List<string>();
+
+            var stat = await statTask;
+            if (stat.Code == 0 && stat.Data != null)
+            {
+                _statistic = stat.Data;
+                _error = null;
+            }
+            else
+            {
+                _error = stat.Msg ?? "获取统计失败";
+            }
+
+            var poller = await pollerTask;
+            _pollerLoads = poller.Code == 0 && poller.Data != null ? poller.Data : new();
+            if (poller.Code != 0) errors.Add($"线程负载：{poller.Msg}");
+
+            var work = await workTask;
+            _workLoads = work.Code == 0 && work.Data != null ? work.Data : new();
+            if (work.Code != 0) errors.Add($"工作线程：{work.Msg}");
+
+            var sess = await sessionTask;
+            _sessions = sess.Code == 0 && sess.Data != null ? sess.Data : new();
+            if (sess.Code != 0) errors.Add($"在线会话：{sess.Msg}");
+
+            _partialError = errors.Count > 0 && stat.Code == 0 ? string.Join("；", errors) : null;
+            _lastRefresh = DateTime.Now.ToString("HH:mm:ss");
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+            if (!silent) _loading = false;
+        }
+    }
+
+    private static string ShortType(string? typeId)
+    {
+        if (string.IsNullOrEmpty(typeId)) return "-";
+        var idx = typeId.LastIndexOf("::", StringComparison.Ordinal);
+        return idx >= 0 ? typeId[(idx + 2)..] : typeId;
+    }
+
+    private static ProgressStatus LoadStatus(int load)
+        => load >= 80 ? ProgressStatus.Exception
+            : load >= 60 ? ProgressStatus.Active
+            : ProgressStatus.Normal;
+
+    private RenderFragment RenderLoads(List<ThreadLoadItem> items) => @<text>
+        @foreach (var t in items)
+        {
+            <div style="display:flex;align-items:center;gap:12px;margin:12px 0;">
+                <span style="width:110px;flex:none;font-size:13px;color:#2d3748;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@t.Name">@t.Name</span>
+                <div style="flex:1;"><Progress Percent="@((double)t.Load)" Status="@LoadStatus(t.Load)" /></div>
+            </div>
+        }
+        @if (items.Count == 0)
+        {
+            <div style="color:#9aa5b1;padding:16px 0;">暂无数据</div>
+        }
+    </text>;
+
+    public void Dispose()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+        _timer?.Dispose();
+    }
+}

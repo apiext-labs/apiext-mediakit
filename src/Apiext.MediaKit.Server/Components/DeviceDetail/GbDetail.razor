@@ -1,0 +1,533 @@
+@namespace Apiext.MediaKit.Server.Components.DeviceDetail
+@implements IDisposable
+@inject Gb28181Service Gb
+@inject MessageService Message
+@inject IJSRuntime JS
+
+@if (_loading)
+{
+    <div style="text-align:center;padding:32px;"><Spin /></div>
+}
+else if (_device != null)
+{
+    <div style="display:flex;flex-direction:column;gap:24px;">
+        @* 操作（顶部） *@
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <Button Icon="search" Disabled="@(!_device.Online)" OnClick="@(async () => await QueryCatalogAsync())">查询目录</Button>
+            <Button Icon="apartment" OnClick="OpenChannels">通道</Button>
+            <Button Icon="warning" OnClick="OpenAlarms">报警记录</Button>
+        </div>
+
+        @* 基本信息 *@
+        <div>
+            <div style="margin-bottom:10px;"><Text Strong="true">基本信息</Text></div>
+            <Descriptions Column="3" Bordered="true">
+                <DescriptionsItem Title="设备编码" Span="3">
+                    <span style="word-break:break-all;">@_device.DeviceId</span>
+                </DescriptionsItem>
+                <DescriptionsItem Title="名称">@_device.Name</DescriptionsItem>
+                <DescriptionsItem Title="地址">@(_device.Host):@_device.Port</DescriptionsItem>
+                <DescriptionsItem Title="状态">
+                    <Tag Color="@(_device.Online ? "success" : "default")">@_device.StatusText</Tag>
+                </DescriptionsItem>
+                <DescriptionsItem Title="通道数">@_device.ChannelCount</DescriptionsItem>
+                <DescriptionsItem Title="最后心跳">@FormatTime(_device.LastKeepalive)</DescriptionsItem>
+            </Descriptions>
+        </div>
+    </div>
+}
+else
+{
+    <div style="text-align:center;padding:32px;color:#718096;">未找到该设备</div>
+}
+
+<Drawer Title="@($"通道列表 - {_device?.Name}")"
+        Width="720"
+        Visible="@_drawerVisible"
+        OnClose="CloseChannels">
+    <Table DataSource="_channels" Loading="_channelsLoading" Size="@TableSize.Small">
+        <AntDesign.Column Title="通道编码" @bind-Field="@context.ChannelId" />
+        <AntDesign.Column Title="名称" @bind-Field="@context.Name" />
+        <AntDesign.Column Title="状态" Width="90" TData="string">
+            <Tag Color="@(context.Status == "ON" ? "success" : "default")">@context.Status</Tag>
+        </AntDesign.Column>
+        <ActionColumn Title="操作" Width="280">
+            <Space Style="gap:4px;">
+                <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => StartPlay(context))">播放</Button>
+                <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => OpenRecordQuery(context))">录像</Button>
+                <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => SubscribeAlarmAsync(context))">订阅</Button>
+                <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => OpenAddresses(context))">地址</Button>
+            </Space>
+        </ActionColumn>
+    </Table>
+</Drawer>
+
+<Drawer Title="@("报警记录")"
+        Width="720"
+        Visible="@_alarmVisible"
+        OnClose="CloseAlarms">
+    <Table DataSource="_alarms" Loading="_alarmLoading" Size="@TableSize.Small">
+        <AntDesign.Column Title="报警时间" Width="170" TData="string">
+            @FormatTime(context.AlarmTime)
+        </AntDesign.Column>
+        <AntDesign.Column Title="通道编码" @bind-Field="@context.DeviceId" />
+        <AntDesign.Column Title="优先级" Width="80" @bind-Field="@context.AlarmPriority" />
+        <AntDesign.Column Title="描述" @bind-Field="@context.AlarmDescription" />
+    </Table>
+</Drawer>
+
+<Modal Title="@($"播放地址 - {_addrChannel?.Name}")"
+       Visible="@_addrVisible"
+       Footer="null"
+       Width="640"
+       DestroyOnClose="true"
+       OnCancel="CloseAddresses">
+    @if (_addrLoading)
+    {
+        <div style="text-align:center;padding:24px;"><Spin /></div>
+    }
+    else
+    {
+        <Alert Type="@AlertType.Info" ShowIcon="true" Style="margin-bottom:12px;"
+               Message="已发起实时点播，下列地址在当前点播会话期间有效；关闭本窗口将自动停止点播。" />
+        <PlayUrlList App="rtp" Stream="@_addrChannel?.ChannelId" />
+    }
+</Modal>
+
+<Modal Title="@($"实时点播 - {_playingChannel?.Name}")"
+       Visible="@_playVisible"
+       Footer="null"
+       Width="720"
+       OnCancel="ClosePlay"
+       DestroyOnClose="true">
+    <div style="background:#000;aspect-ratio:16/9;border-radius:6px;overflow:hidden;">
+        <div id="gb-player" style="width:100%;height:100%;"></div>
+    </div>
+
+    @if (_siblingChannels.Count > 1)
+    {
+        <div style="display:flex;align-items:center;gap:8px;margin-top:12px;">
+            <Text>码流：</Text>
+            <Tag Color="@("blue")">@_playingChannel?.Name</Tag>
+            <Button Size="@ButtonSize.Small" OnClick="@(SwitchStreamAsync)">切换码流</Button>
+            <Text Type="@TextElementType.Secondary">（同设备共 @_siblingChannels.Count 个通道）</Text>
+        </div>
+    }
+
+    <div style="margin-top:12px;border-top:1px solid #f0f0f0;padding-top:12px;">
+        <PtzPad OnPtz="@(cmd => Ptz(cmd))" />
+        <div style="display:flex;justify-content:center;gap:4px;margin-top:8px;align-items:center;">
+            <Text>预置位：</Text>
+            <AntDesign.InputNumber @bind-Value="_presetId" Min="1" Max="255" Style="width:90px;" />
+            <Button Size="@ButtonSize.Small" OnClick="@(() => Preset(PtzCommand.SetPreset))">设置</Button>
+            <Button Size="@ButtonSize.Small" OnClick="@(() => Preset(PtzCommand.GotoPreset))">调用</Button>
+            <Button Size="@ButtonSize.Small" OnClick="@(() => Preset(PtzCommand.RemovePreset))">删除</Button>
+            <Button Size="@ButtonSize.Small" OnClick="@(TimeSyncAsync)">校时</Button>
+        </div>
+    </div>
+</Modal>
+
+<Modal Title="@($"录像查询 - {_recordChannel?.Name}")"
+       Visible="@_recordVisible"
+       OkText="@("查询")"
+       CancelText="@("关闭")"
+       ConfirmLoading="@_recordLoading"
+       OnOk="@(async () => await QueryRecords())"
+       OnCancel="CloseRecordQuery"
+       Width="760">
+    <Space Style="margin-bottom:12px;flex-wrap:wrap;">
+        <Text>起始：</Text>
+        <DatePicker @bind-Value="_recordStart" ShowTime="true" />
+        <Text>结束：</Text>
+        <DatePicker @bind-Value="_recordEnd" ShowTime="true" />
+    </Space>
+    <Table DataSource="_records" Loading="_recordLoading" Size="@TableSize.Small">
+        <AntDesign.Column Title="开始时间" Width="150" TData="string">
+            @context.StartTime
+        </AntDesign.Column>
+        <AntDesign.Column Title="结束时间" Width="150" TData="string">
+            @context.EndTime
+        </AntDesign.Column>
+        <AntDesign.Column Title="名称" @bind-Field="@context.Name" />
+        <AntDesign.Column Title="类型" Width="90" @bind-Field="@context.Type" />
+        <ActionColumn Title="操作" Width="90">
+            <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => StartPlayback(context))">回放</Button>
+        </ActionColumn>
+    </Table>
+</Modal>
+
+<Modal Title="@($"录像回放 - {_recordChannel?.Name}")"
+       Visible="@_playbackVisible"
+       Footer="null"
+       Width="720"
+       OnCancel="ClosePlayback"
+       DestroyOnClose="true">
+    <div style="background:#000;aspect-ratio:16/9;border-radius:6px;overflow:hidden;">
+        <div id="gb-player-back" style="width:100%;height:100%;"></div>
+    </div>
+    <div style="margin-top:12px;border-top:1px solid #f0f0f0;padding-top:12px;">
+        <Space Style="flex-wrap:wrap;">
+            <Button Size="@ButtonSize.Small" OnClick="@(() => TogglePause())">@(_isPaused ? "继续" : "暂停")</Button>
+            <Text>跳转(秒)：</Text>
+            <AntDesign.InputNumber @bind-Value="_seekSeconds" Min="0" Style="width:120px;" />
+            <Button Type="@ButtonType.Primary" Size="@ButtonSize.Small" OnClick="@(() => SeekPlayback())">跳转</Button>
+            <Button Danger="true" Size="@ButtonSize.Small" OnClick="@(() => ClosePlayback())">停止</Button>
+        </Space>
+    </div>
+</Modal>
+
+@code {
+    [Parameter] public string DeviceId { get; set; } = "";
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private bool _loading = true;
+    private GbDeviceRow? _device;
+
+    private bool _drawerVisible;
+    private List<GbChannel> _channels = new();
+    private bool _channelsLoading;
+
+    private bool _playVisible;
+    private GbChannel? _playingChannel;
+    private string _playUrl = "";
+    private bool _pendingPlay;
+    private int _presetId = 1;
+    private List<GbChannel> _siblingChannels = new();
+
+    private bool _recordVisible;
+    private bool _recordLoading;
+    private GbChannel? _recordChannel;
+    private DateTime? _recordStart;
+    private DateTime? _recordEnd;
+    private List<GbRecordItem> _records = new();
+
+    private bool _alarmVisible;
+    private bool _alarmLoading;
+    private List<GbAlarm> _alarms = new();
+
+    private bool _playbackVisible;
+    private string _playbackUrl = "";
+    private string _playbackStreamId = "";
+    private int _seekSeconds;
+    private bool _pendingPlayback;
+    private bool _isPaused;
+
+    private bool _addrVisible;
+    private bool _addrLoading;
+    private GbChannel? _addrChannel;
+
+    private DotNetObjectReference<GbDetail>? _dotNetRef;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _dotNetRef = DotNetObjectReference.Create(this);
+        await LoadAsync();
+    }
+
+    /// <summary>播放器（jessibuca）失败回调：避免只留黑屏。</summary>
+    [JSInvokable]
+    public Task OnPlayerError(string playerId, string message)
+    {
+        Message.Error($"播放失败：{message}。请确认设备在线且已开始推流；若为令牌过期请重新点播。");
+        return Task.CompletedTask;
+    }
+
+    public void Dispose() => _dotNetRef?.Dispose();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_pendingPlay)
+        {
+            _pendingPlay = false;
+            await JS.InvokeVoidAsync("apiextPlayer.create", "gb-player", "gb-player", _dotNetRef);
+            await JS.InvokeVoidAsync("apiextPlayer.play", "gb-player", _playUrl);
+        }
+        if (_pendingPlayback)
+        {
+            _pendingPlayback = false;
+            await JS.InvokeVoidAsync("apiextPlayer.create", "gb-player-back", "gb-player-back", _dotNetRef);
+            await JS.InvokeVoidAsync("apiextPlayer.play", "gb-player-back", _playbackUrl);
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            var devices = await Gb.GetDevicesAsync();
+            _device = devices.FirstOrDefault(d => d.DeviceId == DeviceId);
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载详情失败：{ex.Message}");
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task QueryCatalogAsync()
+    {
+        if (_device == null) return;
+        var (ok, error) = await Gb.QueryCatalogAsync(_device.DeviceId);
+        if (ok)
+        {
+            Message.Success("目录查询完成，通道已更新");
+            await LoadAsync();
+            await OnChanged.InvokeAsync();
+        }
+        else
+        {
+            Message.Error(error ?? "目录查询失败");
+        }
+    }
+
+    private async Task OpenChannels()
+    {
+        if (_device == null) return;
+        _drawerVisible = true;
+        _channelsLoading = true;
+        try
+        {
+            _channels = await Gb.GetChannelsAsync(_device.DeviceId);
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载通道失败：{ex.Message}");
+            _channels = new();
+        }
+        finally
+        {
+            _channelsLoading = false;
+        }
+    }
+
+    private void CloseChannels() => _drawerVisible = false;
+
+    private async Task OpenAlarms()
+    {
+        _alarmVisible = true;
+        _alarmLoading = true;
+        try
+        {
+            _alarms = await Gb.GetAlarmsAsync(100);
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载报警失败：{ex.Message}");
+            _alarms = new();
+        }
+        finally
+        {
+            _alarmLoading = false;
+        }
+    }
+
+    private void CloseAlarms() => _alarmVisible = false;
+
+    private async Task SubscribeAlarmAsync(GbChannel channel)
+    {
+        await Gb.SubscribeAlarmAsync(channel.ChannelId);
+        Message.Success($"已向通道 {channel.Name} 订阅报警");
+    }
+
+    private async Task OpenAddresses(GbChannel channel)
+    {
+        _addrChannel = channel;
+        _addrVisible = true;
+        _addrLoading = true;
+        try
+        {
+            var (ok, error, url) = await Gb.StartPlayAsync(channel.ChannelId);
+            if (!ok || url == null)
+            {
+                Message.Error(error ?? "点播失败");
+                _addrVisible = false;
+                _addrChannel = null;
+            }
+            // 点播成功：播放地址由 PlayUrlList 组件按 rtp/{channelId} 构造
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"点播失败：{ex.Message}");
+            _addrVisible = false;
+            _addrChannel = null;
+        }
+        finally
+        {
+            _addrLoading = false;
+        }
+    }
+
+    private async Task CloseAddresses()
+    {
+        _addrVisible = false;
+        if (_addrChannel != null)
+        {
+            await Gb.StopPlayAsync(_addrChannel.ChannelId);
+            _addrChannel = null;
+        }
+    }
+
+    private async Task StartPlay(GbChannel channel)
+    {
+        var (ok, error, url) = await Gb.StartPlayAsync(channel.ChannelId);
+        if (ok && url != null)
+        {
+            _playingChannel = channel;
+            _playUrl = url;
+            _playVisible = true;
+            _pendingPlay = true;
+            _siblingChannels = await Gb.GetSiblingChannelsAsync(channel.ChannelId);
+        }
+        else
+        {
+            Message.Error(error ?? "点播失败");
+        }
+    }
+
+    private async Task SwitchStreamAsync()
+    {
+        if (_playingChannel == null || _siblingChannels.Count <= 1) return;
+
+        var idx = _siblingChannels.FindIndex(c => c.ChannelId == _playingChannel.ChannelId);
+        if (idx < 0) return;
+        var next = _siblingChannels[(idx + 1) % _siblingChannels.Count];
+
+        await JS.InvokeVoidAsync("apiextPlayer.destroy", "gb-player");
+        await Gb.StopPlayAsync(_playingChannel.ChannelId);
+
+        await StartPlay(next);
+    }
+
+    private async Task ClosePlay()
+    {
+        _playVisible = false;
+        await JS.InvokeVoidAsync("apiextPlayer.destroy", "gb-player");
+        if (_playingChannel != null)
+        {
+            await Gb.StopPlayAsync(_playingChannel.ChannelId);
+        }
+        _playingChannel = null;
+        _playUrl = "";
+    }
+
+    private async Task Ptz(PtzCommand cmd)
+    {
+        if (_playingChannel == null) return;
+        await Gb.PtzControlAsync(_playingChannel.ChannelId, cmd, 5);
+    }
+
+    private async Task Preset(PtzCommand cmd)
+    {
+        if (_playingChannel == null) return;
+        await Gb.PtzControlAsync(_playingChannel.ChannelId, cmd, _presetId);
+    }
+
+    private async Task TimeSyncAsync()
+    {
+        if (_playingChannel == null) return;
+        await Gb.TimeSyncAsync(_playingChannel.ChannelId);
+        Message.Success("已下发校时指令");
+    }
+
+    private void OpenRecordQuery(GbChannel channel)
+    {
+        _recordChannel = channel;
+        _recordStart = DateTime.Today;
+        _recordEnd = DateTime.Now;
+        _records = new();
+        _recordVisible = true;
+    }
+
+    private void CloseRecordQuery() => _recordVisible = false;
+
+    private async Task QueryRecords()
+    {
+        if (_recordChannel == null || _recordStart == null || _recordEnd == null)
+        {
+            Message.Warning("请选择起止时间");
+            return;
+        }
+
+        _recordLoading = true;
+        try
+        {
+            var (ok, error, records) = await Gb.RecordQueryAsync(_recordChannel.ChannelId, _recordStart.Value, _recordEnd.Value);
+            if (ok)
+            {
+                _records = records ?? new();
+                if (_records.Count == 0) Message.Info("该时间段内无录像");
+            }
+            else
+            {
+                Message.Error(error ?? "录像查询失败");
+            }
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"录像查询失败：{ex.Message}");
+        }
+        finally
+        {
+            _recordLoading = false;
+        }
+    }
+
+    private async Task StartPlayback(GbRecordItem record)
+    {
+        if (_recordChannel == null) return;
+        var (ok, error, url, streamId) = await Gb.StartPlaybackAsync(_recordChannel.ChannelId, record);
+        if (ok && url != null)
+        {
+            _playbackUrl = url;
+            _playbackStreamId = streamId ?? "";
+            _seekSeconds = 0;
+            _isPaused = false;
+            _playbackVisible = true;
+            _pendingPlayback = true;
+        }
+        else
+        {
+            Message.Error(error ?? "回放失败");
+        }
+    }
+
+    private async Task ClosePlayback()
+    {
+        _playbackVisible = false;
+        await JS.InvokeVoidAsync("apiextPlayer.destroy", "gb-player-back");
+        if (!string.IsNullOrEmpty(_playbackStreamId))
+        {
+            await Gb.StopPlaybackAsync(_playbackStreamId);
+        }
+        _playbackStreamId = "";
+        _playbackUrl = "";
+    }
+
+    private async Task SeekPlayback()
+    {
+        if (string.IsNullOrEmpty(_playbackStreamId)) return;
+        _isPaused = false;
+        await Gb.PlaybackControlAsync(_playbackStreamId, _seekSeconds);
+    }
+
+    private async Task TogglePause()
+    {
+        if (string.IsNullOrEmpty(_playbackStreamId)) return;
+        if (_isPaused)
+        {
+            await Gb.PlaybackControlAsync(_playbackStreamId, _seekSeconds, false);
+        }
+        else
+        {
+            await Gb.PlaybackControlAsync(_playbackStreamId, _seekSeconds, true);
+        }
+        _isPaused = !_isPaused;
+    }
+
+    private static string FormatTime(DateTime dt)
+        => dt == default ? "-" : dt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+}

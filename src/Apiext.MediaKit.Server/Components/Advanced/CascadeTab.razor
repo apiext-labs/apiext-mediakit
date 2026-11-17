@@ -1,0 +1,200 @@
+@* 高级配置 → 国标级联（上级平台 CRUD） *@
+<Space Style="margin-bottom:12px;flex-wrap:wrap;">
+    <Tag Color="@(Cascade.Enabled ? "success" : "default")">@(Cascade.Enabled ? "级联已启用" : "级联未启用")</Tag>
+    <Text Type="@TextElementType.Secondary">本平台下级编码：@(string.IsNullOrEmpty(Cascade.LocalId) ? "未配置" : Cascade.LocalId)</Text>
+</Space>
+
+<Alert Message="级联开关与本平台下级编码（LocalId）在 appsettings.json 的 Gb28181:Cascade 段配置；上级平台列表持久化于数据库，可在此动态增删改，改动即时生效。"
+       Type="@AlertType.Info" ShowIcon="true" Style="margin-bottom:12px;" />
+
+<Space Style="margin-bottom:12px;">
+    <Button Type="@ButtonType.Primary" Icon="plus" OnClick="OpenCascadeAdd">添加上级平台</Button>
+    <Button Icon="reload" OnClick="@(async () => await LoadCascadeAsync())">刷新</Button>
+</Space>
+
+<Table DataSource="_uppers" Loading="_cascadeLoading" Size="@TableSize.Small">
+    <AntDesign.Column Title="名称" @bind-Field="@context.Name" />
+    <AntDesign.Column Title="SIP服务器国标编码" @bind-Field="@context.PlatformId" />
+    <AntDesign.Column Title="SIP服务IP" @bind-Field="@context.Ip" />
+    <AntDesign.Column Title="SIP服务端口" Width="110" @bind-Field="@context.Port" />
+    <AntDesign.Column Title="状态" Width="100" TData="string">
+        <Tag Color="@(UpperStatusText(context) == "已注册" ? "success" : "default")">@UpperStatusText(context)</Tag>
+    </AntDesign.Column>
+    <ActionColumn Title="操作" Width="120">
+        <Space Style="gap:4px;">
+            <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => OpenCascadeEdit(context))">编辑</Button>
+            <Popconfirm Title="确定删除该上级平台？" OkText="删除" CancelText="取消" OnConfirm="@(() => DeleteCascadeUpper(context))">
+                <Button Type="@ButtonType.Link" Danger="true" Size="@ButtonSize.Small">删除</Button>
+            </Popconfirm>
+        </Space>
+    </ActionColumn>
+</Table>
+
+@if (_uppers.Count == 0 && !_cascadeLoading)
+{
+    <div style="text-align:center;padding:24px;color:#718096;">暂无上级平台，点击「添加上级平台」添加</div>
+}
+
+<Modal Title="@(_editingUpperId == null ? "添加上级平台" : "编辑上级平台")"
+       Visible="@_cascadeFormVisible"
+       OkText="@("保存")"
+       CancelText="@("取消")"
+       ConfirmLoading="@_cascadeSaveLoading"
+       OnOk="@(async () => await SubmitCascadeForm())"
+       OnCancel="CloseCascadeForm">
+    <div style="display:flex;flex-direction:column;gap:16px;">
+        <Input Placeholder="上级平台名称（展示用）" @bind-Value="_upperName" />
+        <Space Style="flex-wrap:wrap;">
+            <Text>IP 地址</Text>
+            <Input Placeholder="SIP 地址（必填）" @bind-Value="_upperIp" Style="width:200px;" />
+            <Text>端口</Text>
+            <AntDesign.InputNumber @bind-Value="_upperPort" Min="1" Max="65535" Style="width:110px;" />
+        </Space>
+        <Input Placeholder="上级平台编码（必填）" @bind-Value="_upperPlatformId" />
+        <Input Placeholder="上级平台域（可空）" @bind-Value="_upperDomain" />
+        <Input Placeholder="鉴权 realm（可空，优先用 401 返回的 realm）" @bind-Value="_upperRealm" />
+        <InputPassword Placeholder="鉴权密码" @bind-Value="_upperPassword" />
+    </div>
+</Modal>
+
+@code {
+    [Inject] private Gb28181Service Gb { get; set; } = default!;
+    [Inject] private GbCascadeEngine Cascade { get; set; } = default!;
+    [Inject] private MessageService Message { get; set; } = default!;
+
+    private bool _cascadeLoading;
+    private List<CascadeUpper> _uppers = new();
+
+    private bool _cascadeFormVisible;
+    private bool _cascadeSaveLoading;
+    private int? _editingUpperId;
+    private string _upperName = "";
+    private string _upperIp = "";
+    private int _upperPort = 5060;
+    private string _upperPlatformId = "";
+    private string _upperDomain = "";
+    private string _upperRealm = "";
+    private string _upperPassword = "admin123";
+
+    protected override Task OnInitializedAsync() => LoadCascadeAsync();
+
+    private async Task LoadCascadeAsync()
+    {
+        _cascadeLoading = true;
+        try
+        {
+            _uppers = await Gb.GetCascadeUppersAsync();
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载上级平台失败：{ex.Message}");
+            _uppers = new();
+        }
+        finally
+        {
+            _cascadeLoading = false;
+        }
+    }
+
+    private void OpenCascadeAdd()
+    {
+        _editingUpperId = null;
+        _upperName = "";
+        _upperIp = "";
+        _upperPort = 5060;
+        _upperPlatformId = "";
+        _upperDomain = "";
+        _upperRealm = "";
+        _upperPassword = "admin123";
+        _cascadeFormVisible = true;
+    }
+
+    private void OpenCascadeEdit(CascadeUpper row)
+    {
+        _editingUpperId = row.Id;
+        _upperName = row.Name;
+        _upperIp = row.Ip;
+        _upperPort = row.Port;
+        _upperPlatformId = row.PlatformId;
+        _upperDomain = row.Domain;
+        _upperRealm = row.Realm;
+        _upperPassword = row.Password;
+        _cascadeFormVisible = true;
+    }
+
+    private void CloseCascadeForm() => _cascadeFormVisible = false;
+
+    private async Task SubmitCascadeForm()
+    {
+        if (string.IsNullOrWhiteSpace(_upperIp) || string.IsNullOrWhiteSpace(_upperPlatformId))
+        {
+            Message.Warning("请填写 IP 地址与上级平台编码");
+            return;
+        }
+
+        _cascadeSaveLoading = true;
+        var upper = new CascadeUpper
+        {
+            Name = _upperName,
+            Ip = _upperIp,
+            Port = _upperPort,
+            PlatformId = _upperPlatformId,
+            Domain = _upperDomain,
+            Realm = _upperRealm,
+            Password = _upperPassword,
+        };
+
+        if (_editingUpperId == null)
+        {
+            var (ok, error, _) = await Gb.AddCascadeUpperAsync(upper);
+            _cascadeSaveLoading = false;
+            if (ok)
+            {
+                _cascadeFormVisible = false;
+                Message.Success("已添加上级平台");
+                await LoadCascadeAsync();
+            }
+            else
+            {
+                Message.Error(error ?? "添加失败");
+            }
+        }
+        else
+        {
+            var (ok, error) = await Gb.UpdateCascadeUpperAsync(_editingUpperId.Value, upper);
+            _cascadeSaveLoading = false;
+            if (ok)
+            {
+                _cascadeFormVisible = false;
+                Message.Success("已保存");
+                await LoadCascadeAsync();
+            }
+            else
+            {
+                Message.Error(error ?? "保存失败");
+            }
+        }
+    }
+
+    private async Task DeleteCascadeUpper(CascadeUpper row)
+    {
+        var (ok, error) = await Gb.DeleteCascadeUpperAsync(row.Id);
+        if (ok)
+        {
+            Message.Success("已删除");
+            await LoadCascadeAsync();
+        }
+        else
+        {
+            Message.Error(error ?? "删除失败");
+        }
+    }
+
+    private string UpperStatusText(CascadeUpper row)
+    {
+        if (!Cascade.Enabled) return "未启用";
+        var state = Cascade.Uppers.FirstOrDefault(u =>
+            string.Equals(u.Key, row.Key, StringComparison.OrdinalIgnoreCase));
+        return state?.Registered == true ? "已注册" : "未注册";
+    }
+}

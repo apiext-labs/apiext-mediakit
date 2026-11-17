@@ -1,0 +1,30 @@
+/* 登录页 */
+.login-layout {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f5f6f8;
+}
+
+.login-card {
+    width: 400px;
+    padding: 40px 32px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.login-brand {
+    text-align: center;
+    margin-bottom: 32px;
+}
+
+.login-brand img {
+    width: 52px;
+    height: 52px;
+}
+
+.login-brand p {
+    color: #9aa5b1;
+    margin: 16px 0 0;
+    font-size: 14px;
+}

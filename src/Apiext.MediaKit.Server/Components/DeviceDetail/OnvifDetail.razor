@@ -1,0 +1,394 @@
+@namespace Apiext.MediaKit.Server.Components.DeviceDetail
+@inject OnvifService Onvif
+@inject MessageService Message
+@inject IJSRuntime JS
+
+@if (_loading)
+{
+    <div style="text-align:center;padding:32px;"><Spin /></div>
+}
+else if (_device != null)
+{
+    <div style="display:flex;flex-direction:column;gap:24px;">
+        @* 操作（顶部） *@
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <Button Icon="download" OnClick="@(async () => await GetStreamUriAsync())">取流</Button>
+            <Button Icon="link" OnClick="OpenAttach">接入</Button>
+            <Button Icon="control" OnClick="OpenPtz">云台</Button>
+            <Button Icon="camera" OnClick="@(async () => await SnapshotAsync())">抓拍</Button>
+            <Popconfirm Title="确定删除该设备？" OkText="删除" CancelText="取消" OnConfirm="@(async () => await DeleteDeviceAsync())">
+                <Button Icon="delete" Danger="true">删除</Button>
+            </Popconfirm>
+        </div>
+
+        @* 基本信息 *@
+        <div>
+            <div style="margin-bottom:10px;"><Text Strong="true">基本信息</Text></div>
+            <Descriptions Column="2" Bordered="true">
+                <DescriptionsItem Title="名称">@_device.Name</DescriptionsItem>
+                <DescriptionsItem Title="地址">@(_device.Host):@_device.Port</DescriptionsItem>
+                <DescriptionsItem Title="厂商">@(string.IsNullOrEmpty(_device.Manufacturer) ? "-" : _device.Manufacturer)</DescriptionsItem>
+                <DescriptionsItem Title="型号">@(string.IsNullOrEmpty(_device.Model) ? "-" : _device.Model)</DescriptionsItem>
+                <DescriptionsItem Title="RTSP 地址" Span="2">
+                    @* 默认掩码，点眼睛图标查看明文（地址里通常带摄像头账号密码） *@
+                    <SecretUrlText Value="@_device.RtspUrl" />
+                    @if (!string.IsNullOrEmpty(_device.RtspUrl))
+                    {
+                        <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" Icon="copy"
+                                OnClick="@(async () => await CopyAsync(_device.RtspUrl!))">复制</Button>
+                    }
+                </DescriptionsItem>
+            </Descriptions>
+        </div>
+    </div>
+}
+else
+{
+    <div style="text-align:center;padding:32px;color:#718096;">未找到该设备</div>
+}
+
+<Modal Title="接入为拉流代理"
+       Visible="@_attachVisible"
+       OkText="@("接入")"
+       CancelText="@("取消")"
+       ConfirmLoading="@_attachLoading"
+       OnOk="@(async () => await SubmitAttachAsync())"
+       OnCancel="CloseAttach">
+    <div style="display:flex;flex-direction:column;gap:16px;">
+        <Input Placeholder="应用名（如 live）" @bind-Value="_attachApp" />
+        <Input Placeholder="流 ID（如 cam1）" @bind-Value="_attachStream" />
+        <span style="color:#718096;font-size:12px;">接入后可在「设备列表」与「直播播放」中查看和播放。</span>
+    </div>
+</Modal>
+
+<Drawer Title="@($"云台控制 - {_device?.Name}")"
+        Width="420"
+        Visible="@_ptzVisible"
+        OnClose="ClosePtz">
+    @if (_device != null)
+    {
+        <Space Direction="@SpaceDirection.Vertical" Style="width:100%;">
+            <div>
+                <div style="margin-bottom:12px;">
+                    <div style="margin-bottom:4px;"><Text Type="@TextElementType.Secondary">移动速度：@(_ptzSpeed.ToString("0.0"))</Text></div>
+                    <Slider @bind-Value="_ptzSpeed" Min="0.1" Max="1" Step="0.1" />
+                </div>
+                <PtzPad Disabled="@(_device == null)" ShowDiagonal="false" ShowFineControls="false" OnPtz="@(cmd => OnPtzPadAsync(cmd))" />
+                <div style="margin-top:8px;text-align:center;color:#9aa5b1;font-size:12px;">ONVIF 云台支持上下左右与变倍，不支持斜向/聚焦/光圈</div>
+            </div>
+
+            <Divider />
+
+            <div>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <Text Strong="true">预置位</Text>
+                    <Space Style="gap:4px;">
+                        <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" Icon="plus" OnClick="OpenSavePreset">保存</Button>
+                        <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" Icon="reload" OnClick="@(LoadPresetsAsync)">刷新</Button>
+                    </Space>
+                </div>
+                <Table DataSource="_presets" Size="@TableSize.Small" Loading="_presetsLoading">
+                    <AntDesign.Column Title="名称" @bind-Field="@context.Name" />
+                    <ActionColumn Title="操作" Width="110">
+                        <Space Style="gap:4px;">
+                            <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => GotoPresetAsync(context))">跳转</Button>
+                            <Popconfirm Title="删除该预置位？" OkText="删除" CancelText="取消" OnConfirm="@(() => RemovePresetAsync(context))">
+                                <Button Type="@ButtonType.Link" Danger="true" Size="@ButtonSize.Small">删除</Button>
+                            </Popconfirm>
+                        </Space>
+                    </ActionColumn>
+                </Table>
+            </div>
+        </Space>
+    }
+</Drawer>
+
+<Modal Title="保存预置位"
+       Visible="@_savePresetVisible"
+       OkText="@("保存")"
+       CancelText="@("取消")"
+       ConfirmLoading="@_savePresetLoading"
+       OnOk="@(async () => await SubmitSavePresetAsync())"
+       OnCancel="CloseSavePreset">
+    <Input Placeholder="预置位名称（如 大门口）" @bind-Value="_savePresetName"
+           OnPressEnter="@(async () => await SubmitSavePresetAsync())" />
+</Modal>
+
+<Modal Title="@($"抓拍 - {_device?.Name}")"
+       Visible="@_snapVisible"
+       Footer="null"
+       OnCancel="CloseSnap"
+       Width="640"
+       DestroyOnClose="true">
+    @if (!string.IsNullOrEmpty(_snapUrl))
+    {
+        <img src="@_snapUrl" style="width:100%;border-radius:6px;" alt="抓拍" />
+    }
+</Modal>
+
+@code {
+    [Parameter] public int DeviceId { get; set; }
+    [Parameter] public EventCallback OnChanged { get; set; }
+    [Parameter] public EventCallback OnDeleted { get; set; }
+
+    private bool _loading = true;
+    private OnvifDevice? _device;
+
+    private bool _attachVisible;
+    private bool _attachLoading;
+    private string _attachApp = "live";
+    private string _attachStream = "";
+
+    private bool _ptzVisible;
+    private List<OnvifPreset> _presets = new();
+    private bool _presetsLoading;
+    private double _ptzSpeed = 0.5;
+
+    private bool _savePresetVisible;
+    private bool _savePresetLoading;
+    private string _savePresetName = "";
+
+    private bool _snapVisible;
+    private string _snapUrl = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            var devices = await Onvif.ListAsync();
+            _device = devices.FirstOrDefault(d => d.Id == DeviceId);
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载详情失败：{ex.Message}");
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task GetStreamUriAsync()
+    {
+        if (_device == null) return;
+        var (ok, error, rtsp) = await Onvif.GetStreamUriAsync(_device.Id);
+        if (ok)
+        {
+            // 地址在「基本信息」里展示并提供复制，toast 只报结果
+            Message.Success("已获取 RTSP 地址");
+            await LoadAsync();
+            await OnChanged.InvokeAsync();
+        }
+        else
+        {
+            Message.Error(error ?? "取流失败");
+        }
+    }
+
+    private void OpenAttach()
+    {
+        _attachApp = "live";
+        _attachStream = "";
+        _attachVisible = true;
+    }
+
+    private void CloseAttach() => _attachVisible = false;
+
+    private async Task SubmitAttachAsync()
+    {
+        if (_device == null) return;
+        if (string.IsNullOrWhiteSpace(_attachStream))
+        {
+            Message.Warning("请填写流 ID");
+            return;
+        }
+
+        _attachLoading = true;
+        var (ok, error) = await Onvif.AttachProxyAsync(_device.Id, _attachApp.Trim(), _attachStream.Trim());
+        _attachLoading = false;
+
+        if (ok)
+        {
+            _attachVisible = false;
+            Message.Success("已接入拉流代理");
+            await OnChanged.InvokeAsync();
+        }
+        else
+        {
+            Message.Error(error ?? "接入失败");
+        }
+    }
+
+    private async Task DeleteDeviceAsync()
+    {
+        if (_device == null) return;
+        try
+        {
+            await Onvif.DeleteAsync(_device.Id);
+            Message.Success("已删除");
+            await OnDeleted.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"删除失败：{ex.Message}");
+        }
+    }
+
+    private void OpenPtz()
+    {
+        _ptzVisible = true;
+        _ = LoadPresetsAsync();
+    }
+
+    private void ClosePtz()
+    {
+        _ptzVisible = false;
+        _presets = new();
+    }
+
+    private async Task LoadPresetsAsync()
+    {
+        if (_device == null) return;
+
+        _presetsLoading = true;
+        try
+        {
+            var (ok, error, presets) = await Onvif.GetPresetsAsync(_device.Id);
+            if (ok)
+            {
+                _presets = presets;
+                if (presets.Count == 0) Message.Info("该设备暂无预置位");
+            }
+            else
+            {
+                Message.Error(error ?? "获取预置位失败");
+            }
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"获取预置位失败：{ex.Message}");
+        }
+        finally
+        {
+            _presetsLoading = false;
+        }
+    }
+
+    private async Task GotoPresetAsync(OnvifPreset preset)
+    {
+        if (_device == null) return;
+        var (ok, error) = await Onvif.GotoPresetAsync(_device.Id, preset.Token);
+        if (ok) Message.Success($"已跳转到「{preset.Name}」");
+        else Message.Error(error ?? "跳转失败");
+    }
+
+    /// <summary>通用云台键盘（PtzPad）指令 → ONVIF 方向映射；不支持的方向给出提示。</summary>
+    private async Task OnPtzPadAsync(PtzCommand cmd)
+    {
+        if (_device == null) return;
+
+        if (cmd == PtzCommand.Stop)
+        {
+            var (stopped, stopError) = await Onvif.PtzStopAsync(_device.Id);
+            if (!stopped) Message.Error(stopError ?? "停止失败");
+            return;
+        }
+
+        PtzDirection? direction = cmd switch
+        {
+            PtzCommand.Up => PtzDirection.Up,
+            PtzCommand.Down => PtzDirection.Down,
+            PtzCommand.Left => PtzDirection.Left,
+            PtzCommand.Right => PtzDirection.Right,
+            PtzCommand.ZoomIn => PtzDirection.ZoomIn,
+            PtzCommand.ZoomOut => PtzDirection.ZoomOut,
+            _ => null,
+        };
+        if (direction == null)
+        {
+            Message.Info("该设备不支持此云台指令");
+            return;
+        }
+
+        var (ok, error) = await Onvif.PtzMoveAsync(_device.Id, direction.Value, _ptzSpeed);
+        if (!ok) Message.Error(error ?? "云台移动失败");
+    }
+
+    private async Task SnapshotAsync()
+    {
+        if (_device == null) return;
+        var (ok, error, url) = await Onvif.GetSnapshotUriAsync(_device.Id);
+        if (ok && !string.IsNullOrEmpty(url))
+        {
+            // 改为应用内展示：新开窗口容易被浏览器拦弹窗，且拿不到失败反馈
+            _snapUrl = url;
+            _snapVisible = true;
+        }
+        else
+        {
+            Message.Error(error ?? "获取抓拍地址失败");
+        }
+    }
+
+    private void CloseSnap() => _snapVisible = false;
+
+    private async Task CopyAsync(string text)
+    {
+        var result = await JS.InvokeAsync<string>("apiextUtil.copy", text);
+        if (result == "OK") Message.Success("已复制");
+    }
+
+    private void OpenSavePreset()
+    {
+        _savePresetName = "";
+        _savePresetVisible = true;
+    }
+
+    private void CloseSavePreset() => _savePresetVisible = false;
+
+    private async Task SubmitSavePresetAsync()
+    {
+        if (_device == null) return;
+        if (string.IsNullOrWhiteSpace(_savePresetName))
+        {
+            Message.Warning("请填写预置位名称");
+            return;
+        }
+
+        _savePresetLoading = true;
+        var (ok, error) = await Onvif.SavePresetAsync(_device.Id, _savePresetName.Trim());
+        _savePresetLoading = false;
+
+        if (ok)
+        {
+            _savePresetVisible = false;
+            Message.Success("已保存预置位");
+            await LoadPresetsAsync();
+        }
+        else
+        {
+            Message.Error(error ?? "保存失败");
+        }
+    }
+
+    private async Task RemovePresetAsync(OnvifPreset preset)
+    {
+        if (_device == null) return;
+        var (ok, error) = await Onvif.RemovePresetAsync(_device.Id, preset.Token);
+        if (ok)
+        {
+            Message.Success("已删除");
+            await LoadPresetsAsync();
+        }
+        else
+        {
+            Message.Error(error ?? "删除失败");
+        }
+    }
+}

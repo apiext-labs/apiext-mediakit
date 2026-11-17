@@ -1,0 +1,133 @@
+@namespace Apiext.MediaKit.Server.Components
+@inject IJSRuntime JS
+@inject MessageService Message
+@inject NavigationManager Nav
+@inject TokenService Tokens
+@inject ZlmService Zlm
+
+@if (_token == null)
+{
+    <Alert Type="@AlertType.Warning" ShowIcon="true" Style="margin-bottom:8px;"
+           Message="还没有可用的访问令牌，下列地址暂时不能用（站内播放不受影响）。请先到「高级配置 → 访问令牌」创建一个。" />
+}
+
+<Tabs>
+    <TabPane Key="@("direct")" Tab="@("直连地址")">
+        @RenderList(DirectItems)
+        <div style="margin-top:6px;color:#9aa5b1;font-size:12px;">
+            直连流媒体服务，延迟最低；需要对方能访问 @ZlmHttpPort 端口。
+        </div>
+    </TabPane>
+    <TabPane Key="@("proxy")" Tab="@("经平台代理")">
+        @RenderList(ProxyItems)
+        <div style="margin-top:6px;color:#9aa5b1;font-size:12px;">
+            只开放平台端口 @AppPort，不暴露流媒体服务；推荐给外部系统使用。
+        </div>
+    </TabPane>
+</Tabs>
+
+<div style="margin-top:8px;color:#9aa5b1;font-size:12px;">
+    地址里带的是访问令牌：有效期选「永久」就不会过期，只有在「高级配置 → 访问令牌」禁用或换新后才失效。
+</div>
+
+@code {
+    [Parameter] public string App { get; set; } = "";
+    [Parameter] public string Stream { get; set; } = "";
+
+    private string? _token;
+    private string _authority = "";
+
+    /// <summary>平台对外端口（取自当前页面地址，用于说明文案）。</summary>
+    private string AppPort => new Uri(Nav.BaseUri).Port.ToString();
+
+    /// <summary>ZLM 对外 HTTP 端口（直连地址用的端口）。</summary>
+    private string ZlmHttpPort
+    {
+        get
+        {
+            try { return new Uri(Zlm.PlayBaseUrl).Port.ToString(); }
+            catch { return "28180"; }
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        _token = Tokens.GetActiveToken();
+        try { _authority = new Uri(Nav.BaseUri).Authority; } catch { _authority = ""; }
+    }
+
+    private string Query(char sep) => _token == null ? "" : $"{sep}token={_token}";
+
+    /// <summary>直连 ZLM：FLV / WS-FLV / HLS / WebRTC（均不经平台）。</summary>
+    private List<(string Label, string Url, string? Hint)> DirectItems => new()
+    {
+        ("FLV", DirectUrl($"/{App}/{Stream}.live.flv"),
+            "延迟最低，VLC、PotPlayer 等播放器可直接打开"),
+        ("WS-FLV", DirectWsUrl($"/{App}/{Stream}.live.flv"),
+            "WebSocket 方式，需播放器支持，不能粘到浏览器地址栏"),
+        ("HLS", DirectHlsUrl,
+            "兼容性最好，延迟约 5~10 秒"),
+        ("WebRTC", DirectRtcUrl,
+            "延迟最低，需播放器按交互协议接入，不能粘到浏览器地址栏"),
+    };
+
+    /// <summary>经平台代理：FLV / HLS / WS-FLV。</summary>
+    private List<(string Label, string Url, string? Hint)> ProxyItems => new()
+    {
+        ("FLV", $"{Nav.BaseUri}play/{App}/{Stream}.live.flv{Query('?')}",
+            "延迟低于 HLS"),
+        ("HLS", $"{Nav.BaseUri}play/{App}/{Stream}/hls.m3u8{Query('?')}",
+            "兼容性最好，延迟约 5~10 秒；每次请求都校验令牌"),
+        ("WS-FLV", $"ws://{_authority}/play/{App}/{Stream}.live.flv{Query('?')}",
+            "WebSocket 方式，需播放器支持，不能粘到浏览器地址栏"),
+    };
+
+    /// <summary>ZLM 直连地址（附长期访问令牌，由 ZLM on_play hook 校验）。</summary>
+    private string DirectUrl(string path) => _token == null ? "" : $"{Zlm.PlayBaseUrl}{path}{Query('?')}";
+
+    /// <summary>ZLM 直连 HLS 索引地址（附长期访问令牌，由 on_play 校验 schema=hls）。</summary>
+    private string DirectHlsUrl => _token == null ? "" : $"{Zlm.PlayBaseUrl}/{App}/{Stream}/hls.m3u8{Query('?')}";
+
+    /// <summary>ZLM 直连 WebRTC 信令地址（附长期访问令牌，由 on_play 校验 schema=rtc）。</summary>
+    private string DirectRtcUrl => _token == null ? "" : Zlm.BuildWebRtcUrl(App, Stream) + Query('&');
+
+    /// <summary>ZLM 直连 WebSocket 地址（把 http(s) 基址换成 ws(s)）。</summary>
+    private string DirectWsUrl(string path)
+    {
+        if (_token == null) return "";
+        var wsBase = Zlm.PlayBaseUrl
+            .Replace("https://", "wss://", StringComparison.OrdinalIgnoreCase)
+            .Replace("http://", "ws://", StringComparison.OrdinalIgnoreCase);
+        return $"{wsBase}{path}{Query('?')}";
+    }
+
+    private RenderFragment RenderList(IReadOnlyList<(string Label, string Url, string? Hint)> items) =>
+        @<div style="display:flex;flex-direction:column;gap:6px;">
+            @foreach (var item in items)
+            {
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span style="width:64px;flex-shrink:0;color:#718096;font-size:12px;display:inline-flex;align-items:center;gap:4px;">
+                        @item.Label
+                        @if (item.Hint != null)
+                        {
+                            <Tooltip Title="@item.Hint">
+                                <Icon Type="info-circle" Style="color:#9aa5b1;cursor:help;font-size:12px;" />
+                            </Tooltip>
+                        }
+                    </span>
+                    <span style="flex:1;font-family:var(--apiext-font-mono, monospace);font-size:12px;color:#2d3748;word-break:break-all;" title="@item.Url">@item.Url</span>
+                    <Button Size="@ButtonSize.Small" Icon="copy" OnClick="@(() => CopyAsync(item.Url))">复制</Button>
+                </div>
+            }
+        </div>;
+
+    private async Task CopyAsync(string url)
+    {
+        if (string.IsNullOrEmpty(url)) return;
+        var result = await JS.InvokeAsync<string>("apiextUtil.copy", url);
+        if (result == "OK")
+        {
+            Message.Success("已复制");
+        }
+    }
+}

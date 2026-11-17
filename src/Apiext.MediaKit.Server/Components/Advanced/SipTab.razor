@@ -1,0 +1,110 @@
+@* 高级配置 → SIP 接入（接入模式切换 / 平台参数展示 / 一键复制） *@
+<div style="margin-bottom:16px;border:1px solid #f0f0f0;border-radius:6px;padding:12px 16px;">
+    <div style="margin-bottom:8px;"><Text Strong="true">接入模式</Text></div>
+    <RadioGroup @bind-Value="GbAccessMode" ButtonStyle="@RadioButtonStyle.Solid">
+        <Radio RadioButton="true" Value="@("auto")">注册即接入</Radio>
+        <Radio RadioButton="true" Value="@("whitelist")">预登记 + 白名单鉴权</Radio>
+    </RadioGroup>
+    <div style="margin-top:8px;color:#9aa5b1;font-size:12px;">
+        @(_gbAccessMode == "whitelist"
+            ? "仅预登记的设备（国标 ID + 密码）可注册接入；预登记在「设备列表 → 添加 → GB28181」操作。"
+            : "设备配置好平台参数后主动注册即可接入（全局统一密码）。")
+    </div>
+</div>
+
+<Alert Type="@AlertType.Info" ShowIcon="true" Style="margin-bottom:12px;"
+       Message="GB28181 平台接入参数，需配置到设备端「国标服务器 / 平台接入」；如需修改，请在 appsettings.json 的 Gb28181 段配置后重启服务。" />
+<Space Style="margin-bottom:12px;">
+    <Tag Color="@(Sip.IsRunning ? "success" : "error")">@(Sip.IsRunning ? "SIP 服务运行中" : "SIP 服务未运行")</Tag>
+    <Button Size="@ButtonSize.Small" Icon="check" OnClick="CheckSip">检测</Button>
+    <Button Type="@ButtonType.Primary" Size="@ButtonSize.Small" Icon="copy" OnClick="@(async () => await CopySipInfoAsync())">一键复制</Button>
+</Space>
+<div style="border:1px solid #f0f0f0;border-radius:6px;overflow:hidden;max-width:560px;">
+    <div style="display:flex;padding:8px 14px;border-bottom:1px solid #f0f0f0;">
+        <div style="width:170px;color:#718096;">SIP ID</div>
+        <div>@Sip.SipId</div>
+    </div>
+    <div style="display:flex;padding:8px 14px;border-bottom:1px solid #f0f0f0;">
+        <div style="width:170px;color:#718096;">SIP 域</div>
+        <div>@Sip.SipDomain</div>
+    </div>
+    <div style="display:flex;padding:8px 14px;border-bottom:1px solid #f0f0f0;">
+        <div style="width:170px;color:#718096;">SIP 地址（本机 IP）</div>
+        <div>@Sip.LocalIp</div>
+    </div>
+    <div style="display:flex;padding:8px 14px;border-bottom:1px solid #f0f0f0;">
+        <div style="width:170px;color:#718096;">SIP 端口</div>
+        <div>@Sip.SipPort (UDP)</div>
+    </div>
+    <div style="display:flex;padding:8px 14px;border-bottom:1px solid #f0f0f0;">
+        <div style="width:170px;color:#718096;">设备统一接入密码</div>
+        <div>@_gbPassword</div>
+    </div>
+    <div style="display:flex;padding:8px 14px;">
+        <div style="width:170px;color:#718096;">收流端口范围</div>
+        <div>@(_rtpMin > 0 ? $"{_rtpMin} ~ {_rtpMax} (TCP/UDP)" : "-")</div>
+    </div>
+</div>
+
+@code {
+    [Inject] private Gb28181Service Gb { get; set; } = default!;
+    [Inject] private GbSipEngine Sip { get; set; } = default!;
+    [Inject] private IConfiguration Config { get; set; } = default!;
+    [Inject] private MessageService Message { get; set; } = default!;
+    [Inject] private IJSRuntime JS { get; set; } = default!;
+
+    private string _gbPassword = "";
+    private int _rtpMin;
+    private int _rtpMax;
+    private string _gbAccessMode = "auto";
+
+    private string GbAccessMode
+    {
+        get => _gbAccessMode;
+        set
+        {
+            var normalized = value == "whitelist" ? "whitelist" : "auto";
+            if (_gbAccessMode == normalized) return;
+            _gbAccessMode = normalized;
+            _ = SaveAccessModeAsync(normalized);
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _gbPassword = Config["Gb28181:Password"] ?? "";
+        int.TryParse(Config["Gb28181:RtpPortMin"], out _rtpMin);
+        int.TryParse(Config["Gb28181:RtpPortMax"], out _rtpMax);
+        _gbAccessMode = await Gb.GetAccessModeAsync() == "whitelist" ? "whitelist" : "auto";
+    }
+
+    private async Task SaveAccessModeAsync(string mode)
+    {
+        await Gb.SetAccessModeAsync(mode);
+        Message.Success(mode == "whitelist" ? "已切换为白名单鉴权模式" : "已切换为注册即接入模式");
+    }
+
+    private void CheckSip()
+        => Message.Info(Sip.IsRunning
+            ? $"SIP 服务运行中，监听 UDP {Sip.SipPort}"
+            : "SIP 服务未运行，请检查端口占用与 Gb28181 配置");
+
+    private async Task CopySipInfoAsync()
+    {
+        var text = $"SIP ID: {Sip.SipId}\n" +
+                   $"SIP 域: {Sip.SipDomain}\n" +
+                   $"SIP 地址: {Sip.LocalIp}\n" +
+                   $"SIP 端口: {Sip.SipPort} (UDP)\n" +
+                   $"接入密码: {_gbPassword}\n" +
+                   $"收流端口范围: {_rtpMin}~{_rtpMax}";
+        var result = await JS.InvokeAsync<string>("apiextUtil.copy", text);
+        if (result == "OK")
+        {
+            Message.Success("已复制到剪贴板");
+        }
+        else
+        {
+            Message.Error("复制失败，请手动复制");
+        }
+    }
+}

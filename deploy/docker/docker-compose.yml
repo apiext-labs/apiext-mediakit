@@ -1,0 +1,85 @@
+# 单容器编排：应用 + ZLM 同容器（entrypoint.sh 同时拉起两个进程）
+#
+# 开箱即用：`bash deploy/docker/install.sh` 会探测本机 IP、生成 .env/config.ini 并直接启动（镜像模式）；
+# 源码构建则 `cp .env.example .env` 改 PUBLIC_HOST 后 `docker compose up -d --build`。
+#
+# 端口策略：默认全部使用「非常用端口」，避免与宿主机其他软件冲突。
+# 除应用端口（宿主 28080 → 容器 8080）外，其余端口都是 1:1 映射：
+# SDP / WebRTC SDP 里写的就是容器内端口，做 NAT 转换会导致设备/浏览器连不上。
+# 端口定义同时存在于 deploy/docker/config.ini，改端口时两处必须一致。
+services:
+  apiext-mediakit:
+    build:
+      # compose 在 deploy/docker/ 下，构建上下文要回到仓库根目录（Dockerfile 里 COPY src/ 与 deploy/docker/）
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      # 基础镜像源，默认官方；国内网络可在 deploy/docker/.env 覆盖为加速源
+      # 例：DOTNET_SDK_IMAGE=mcr.m.daocloud.io/dotnet/sdk:10.0
+      args:
+        DOTNET_SDK_IMAGE: ${DOTNET_SDK_IMAGE:-mcr.microsoft.com/dotnet/sdk:10.0}
+        DOTNET_RUNTIME_IMAGE: ${DOTNET_RUNTIME_IMAGE:-mcr.microsoft.com/dotnet/aspnet:10.0}
+        ZLM_IMAGE: ${ZLM_IMAGE:-zlmediakit/zlmediakit:master}
+    image: apiext-mediakit
+    container_name: apiext-mediakit
+    ports:
+      - "${APP_PORT:-28080}:8080"             # 应用：Web UI / REST API / 播放代理 /play/*
+      - "${SIP_PORT:-28060}:28060/udp"        # GB28181 SIP 信令
+      - "${ZLM_HTTP_PORT:-28180}:28180"       # ZLM HTTP：HTTP-FLV / HLS / TS / fMP4 / WebRTC 信令
+      - "${RTSP_PORT:-28554}:28554"           # RTSP
+      - "${RTMP_PORT:-28335}:28335"           # RTMP
+      - "21000:21000"                         # RTP over TCP
+      - "21000:21000/udp"                     # RTP over UDP
+      # WebRTC 媒体：ZLM 的 [rtc] port 与 [rtc] tcpPort 是两个键，UDP/TCP 都要映射，
+      # 只映射 UDP 会让走 TCP 候选的浏览器连不上
+      - "28000:28000/udp"
+      - "28000:28000/tcp"
+      - "29000:29000/udp"                     # SRT
+      - "24000-24500:24000-24500/udp"         # GB28181 点播收流（RTP over UDP）
+      - "24000-24500:24000-24500"             # GB28181 点播收流（RTP over TCP）
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://0.0.0.0:8080
+      # 管理平台对外端口（用于「端口清单」展示，须与 ports 的宿主端口一致）
+      - App__PublicPort=${APP_PORT:-28080}
+      - TZ=${TZ:-Asia/Shanghai}
+      - ConnectionStrings__Default=Data Source=APP_DATA/apiext-mediakit.db
+      # 应用与 ZLM 同容器，直接访问本机 ZLM HTTP（已改为非常用端口 28180）
+      - ZlMediaKit__BaseUrl=http://127.0.0.1:28180
+      - ZlMediaKit__Secret=7f3a9c2e-1b4d-4e8f-9a5c-3d6e2b7a1c8f
+      # 对外播放地址 = http://PUBLIC_HOST:ZLM_HTTP_PORT（PlayBaseUrl 留空 → 自动拼）
+      - ZlMediaKit__PublicHost=${PUBLIC_HOST:?set PUBLIC_HOST in deploy/docker/.env (host IP reachable by clients)}
+      - ZlMediaKit__PublicHttpPort=${ZLM_HTTP_PORT:-28180}
+      # 对外 RTSP/RTMP 端口（须与上面端口映射一致，否则生成的播放地址端口错误）
+      - ZlMediaKit__RtspPort=${RTSP_PORT:-28554}
+      - ZlMediaKit__RtmpPort=${RTMP_PORT:-28335}
+      # 平台 SIP 监听端口（设备端要按这个端口填写，不是 5060）
+      - Gb28181__SipPort=${SIP_PORT:-28060}
+      # 设备注册/推流所见地址（同机部署即宿主机 IP）
+      - Gb28181__LocalIp=${PUBLIC_HOST}
+      - Gb28181__MediaIp=${PUBLIC_HOST}
+      # 国标 RTP 收流端口段（与 config.ini 的 [rtp_proxy] port_range 一致）
+      - Gb28181__RtpPortMin=24000
+      - Gb28181__RtpPortMax=24500
+      # 录像源目录：直接读 ZLM 的 record 目录（同容器）
+      - Recording__SourcePath=/opt/media/bin/www/record
+      # ZLM WebHook（config.ini 的 [hook] 段）：能力令牌根密钥，须与 config.ini 各 URL 的 ?cap= 同源
+      # 换密钥后必须重算 config.ini 里 9 个事件的 ?cap=（算法见 config.ini 注释），否则 hook 全部被 403
+      # ZlmHook__CapabilitySecret=ccd43e63166c6c328ffac037d985117035c64889746d2ff360b1858d8bfb9631
+      # 播放令牌签名密钥（≥32 字节；少于 32 字节时播放鉴权自动关闭）
+      # PlayToken__Secret=d4c7d36b5e55cd69deb8a045b46319d1a47b396bdbcb3a6c43c2656493a05433
+      # 生产环境如需绑定客户端 IP（NAT/反向代理后面不要开）
+      # PlayToken__BindClientIp=false
+    volumes:
+      - ../../APP_DATA:/app/APP_DATA
+      - ./config.ini:/opt/media/conf/config.ini
+      # 宿主可编辑的配置覆盖层（优先级：环境变量 > 本文件 > 镜像内 appsettings.json）
+      # 改完 docker compose restart 生效，无需重建镜像
+      - ./appsettings.Production.json:/app/appsettings.Production.json:ro
+      - zlm-record:/opt/media/bin/www/record
+      # SMB/NFS/S3 备份挂载目录（宿主机侧挂载后映射进容器，例如）
+      # - /mnt/nas:/backup/nas
+      # - /mnt/s3:/backup/s3
+    restart: unless-stopped
+
+volumes:
+  zlm-record:
