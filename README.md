@@ -123,7 +123,7 @@ Apiext.MediaKit/
 ├─ AGENTS.md                      # 开发者手册（约定、踩坑、如何改代码）
 ├─ Apiext.MediaKit.slnx           # 解决方案
 ├─ APP_DATA/                      # 运行时 SQLite 数据（不入库）
-├─ .github/workflows/             # 自动构建 Docker 镜像与 Windows 安装包
+├─ .github/workflows/             # 手动构建 Docker 镜像与 Windows 安装包
 ├─ src/Apiext.MediaKit.Server/    # 单项目：页面 + Web API + 后台服务
 │  ├─ Controllers/  Contracts/  Apis/  Services/  Persistence/  Auth/
 │  ├─ Gb28181/  Onvif/  Extensions/
@@ -137,10 +137,12 @@ Apiext.MediaKit/
 
 ## 发布物
 
-推 `v1.2.3` 标签或推主分支后，GitHub Actions 自动构建：
+在 GitHub Actions 页面手动触发工作流构建（推代码 / 推标签都不再自动触发）：
 
-- Docker 镜像 `ghcr.io/apiext-labs/apiext-mediakit`（`latest`、日期版本、`sha-xxxx`、语义化版本）
-- Windows 安装包 `Apiext-MediaKit-Setup-<版本>.exe`，附到同名 GitHub Release
+- Docker 镜像 `ghcr.io/apiext-labs/apiext-mediakit`（`yyMMdd-HHmm`、默认分支 `latest`、`sha-xxxx`）
+- Windows 安装包 `Apiext-MediaKit-Setup-<版本>.exe`，勾选 `publish` 时附到同名 GitHub Release
+
+版本号统一为 `yyMMdd-HHmm`（Asia/Shanghai，如 `261117-1140`）。
 
 开发侧如何构建、打包、发布，见 [`AGENTS.md`](AGENTS.md)。
 
@@ -162,5 +164,5 @@ ZLMediaKit（MIT，流媒体引擎）、jessibuca（播放器）、Ant Design Bl
 
 - [x] 设备接入（拉流代理 / ONVIF / GB28181）、视频调阅、录像回放与备份、监控、高级配置
 - [x] 播放令牌 + ZLM WebHook 鉴权、按需拉流、录像索引对账
-- [x] Docker 一键安装、Windows 原生安装包、GitHub Actions 自动发布
+- [x] Docker 一键安装、Windows 原生安装包、GitHub Actions 手动发布
 - [ ] RBAC 多用户、录像回放时间轴拖拽、云台预置位 UI 增强、移动端适配

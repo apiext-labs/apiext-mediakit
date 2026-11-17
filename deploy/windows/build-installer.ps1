@@ -5,12 +5,18 @@
 .DESCRIPTION
     前置：deploy/windows 下已具备 app\、zlm\、ffmpeg\、nssm.exe（缺一不可）。
     NSIS 由 scoop 安装（scoop install nsis）或官网安装，脚本会用 PATH 上的 makensis。
+    版本号未指定时自动取当前时间 yyMMdd-HHmm（Asia/Shanghai），并写入 installer.nsi 的 APP_VERSION。
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File deploy\windows\build-installer.ps1
+
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File deploy\windows\build-installer.ps1 -Version 261117-1140
 #>
 [CmdletBinding()]
-param()
+param(
+    [string]$Version = ""
+)
 
 $ErrorActionPreference = "Stop"
 $dir = $PSScriptRoot
@@ -41,6 +47,18 @@ if (-not $makensis) {
     throw "未找到 makensis，请先安装 NSIS：scoop install nsis（或官网下载）"
 }
 
+# 版本号：未指定时取当前时间 yyMMdd-HHmm（Asia/Shanghai，UTC+8）
+if (-not $Version) {
+    $Version = [DateTimeOffset]::UtcNow.ToOffset([TimeSpan]::FromHours(8)).ToString("yyMMdd-HHmm")
+}
+$nsi = Join-Path $dir "installer.nsi"
+$nsiOriginal = [IO.File]::ReadAllText($nsi)
+$nsiText = $nsiOriginal -replace '!define\s+APP_VERSION\s+"[^"]+"', ('!define APP_VERSION     "' + $Version + '"')
+# installer.nsi 是 UTF-8 with BOM 且 `Unicode true`，必须保留 BOM，否则 makensis 按 ANSI 解析导致中文乱码
+$nsiEncoding = New-Object System.Text.UTF8Encoding($true)
+[IO.File]::WriteAllText($nsi, $nsiText, $nsiEncoding)
+Write-Host "版本号: $Version"
+
 $appSize = [math]::Round(((Get-ChildItem (Join-Path $dir "app") -Recurse -File | Measure-Object -Sum Length).Sum / 1MB), 1)
 Write-Host "makensis: $makensis"
 Write-Host "载荷体积: app $appSize MB + zlm/ffmpeg/nssm，开始编译（LZMA 压缩较慢，约 2-5 分钟）..."
@@ -53,6 +71,8 @@ try {
 }
 finally {
     Pop-Location
+    # 编译后还原 installer.nsi，避免本地打包把模板版本号改成时间戳污染工作区
+    [IO.File]::WriteAllText($nsi, $nsiOriginal, $nsiEncoding)
 }
 
 $setup = Get-ChildItem $dir -Filter "Apiext-MediaKit-Setup-*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1

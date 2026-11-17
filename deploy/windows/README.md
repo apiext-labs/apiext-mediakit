@@ -84,7 +84,7 @@ powershell -ExecutionPolicy Bypass -File deploy\windows\publish-app.ps1 -SelfCon
 ```powershell
 # 需要 NSIS：scoop install nsis
 powershell -ExecutionPolicy Bypass -File deploy\windows\build-installer.ps1
-# 产物：deploy\windows\Apiext-MediaKit-Setup-1.0.0.exe
+# 产物：deploy\windows\Apiext-MediaKit-Setup-261117-1140.exe（版本号默认取当前时间，-Version 可指定）
 ```
 
 安装包做的事（等价于手工跑 install.ps1，只是加了向导）：
@@ -102,22 +102,20 @@ powershell -ExecutionPolicy Bypass -File deploy\windows\build-installer.ps1
 静默安装（无人值守）：
 
 ```powershell
-Apiext-MediaKit-Setup-1.0.0.exe /S /D=C:\apiext-mediakit
+Apiext-MediaKit-Setup-261117-1140.exe /S /D=C:\apiext-mediakit
 ```
 > `/S` 静默时不会弹参数页，脚本取 `detect-ip.ps1` 探测到的 IP 与全部默认端口（28080 / 28180 / 28554 / 28335 / 28000 / 29000 / 21000 / 28060 / 24000-24500）；需要自定义地址或端口时请用交互安装，或直接跑 `install.ps1` 传参。
 
 ---
 
-### 3.2 自动发布（GitHub Actions）
+### 3.2 手动发布（GitHub Actions）
 
-推 `v*` 标签即自动构建并发布，无需本地打包：
+在 Actions 页面手动触发 `.github/workflows/windows-installer.yml`（Run workflow），无需本地打包、无需推标签：
 
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
+- 默认 `publish=true`：创建/更新 Release 并附 `Apiext-MediaKit-Setup-<版本>.exe`；取消勾选则只产出 artifact，不发 Release。
+- 版本号自动生成为 `yyMMdd-HHmm`（Asia/Shanghai，如 `261117-1140`），同时改写 `installer.nsi` 的 `APP_VERSION`。
 
-`.github/workflows/windows-installer.yml` 在 `windows-latest` 上依次执行：`publish-app.ps1`（自包含发布）→ `fetch-payload.ps1`（下载 ZLMediaKit / ffmpeg / NSSM）→ 安装 NSIS 编译安装包 → 上传 Actions artifact → 创建/更新 Release 并附 `Apiext-MediaKit-Setup-<版本>.exe`（版本号取自标签，同时会改写 `installer.nsi` 的 `APP_VERSION`）。推主分支或手动触发时只产出 artifact，不发 Release。
+工作流在 `windows-latest` 上依次执行：`publish-app.ps1`（自包含发布）→ `fetch-payload.ps1`（下载 ZLMediaKit / ffmpeg / NSSM）→ 安装 NSIS 编译安装包 → 上传 Actions artifact → （`publish=true` 时）创建/更新 Release。
 
 载荷下载（`fetch-payload.ps1`）：
 
@@ -262,7 +260,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -RemoveData
 
 ### 9.1.1 体积构成（`MediaServer.exe` 只有 10.7 MB 是正常的）
 
-安装包 `Apiext-MediaKit-Setup-1.0.0.exe` 约 80 MB，内部载荷未压缩 276.6 MB（LZMA 压到 28.8%）：
+安装包（如 `Apiext-MediaKit-Setup-261117-1140.exe`）约 80 MB，内部载荷未压缩 276.6 MB（LZMA 压到 28.8%）：
 
 | 内容 | 未压缩 | 占比 | 说明 |
 |---|---|---|---|

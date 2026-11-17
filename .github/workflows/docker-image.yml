@@ -1,8 +1,8 @@
 # 构建并推送 Docker 镜像到 GitHub Container Registry（GHCR）
 #
 # 镜像地址：ghcr.io/<owner>/<repo>
-# 标签：分支/PR → latest + yyMMdd-HHmm + sha-xxxxxxx；推送 v1.2.3 标签 → 同时打 1.2.3 / 1.2 / latest
-# 触发：推 main / 推 v* 标签 / 手动（可指定平台与是否打 latest）
+# 标签：手动触发 → yyMMdd-HHmm + sha-xxxxxxx；在默认分支上触发时另打 latest
+# 触发：仅手动（Actions → Docker Image → Run workflow，可指定平台与是否推送）
 #
 # 说明：镜像内是「ZLM + .NET 运行时 + 应用」，Dockerfile 在容器里 dotnet publish，
 # 因此 arm64 需要 QEMU 模拟（会很慢），默认只构建 linux/amd64，需要多架构时手动触发并填平台。
@@ -10,9 +10,6 @@
 name: Docker Image
 
 on:
-  push:
-    branches: [main, master]
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       platforms:
@@ -61,14 +58,13 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Normalize image name (lowercase)
+      - name: Normalize image name
         id: image
         run: |
           echo "name=$(echo '${{ env.REGISTRY }}/${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
@@ -81,9 +77,6 @@ jobs:
           tags: |
             type=raw,value=${{ steps.version.outputs.tag }}
             type=sha,prefix=sha-,format=short
-            type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
 
       - name: Build and push
@@ -91,7 +84,7 @@ jobs:
         with:
           context: .
           file: ./deploy/docker/Dockerfile
-          push: ${{ github.event_name != 'pull_request' && (inputs.push == null || inputs.push) }}
+          push: ${{ inputs.push }}
           platforms: ${{ inputs.platforms || 'linux/amd64' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

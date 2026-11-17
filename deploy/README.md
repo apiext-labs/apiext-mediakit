@@ -85,12 +85,14 @@ Apiext-MediaKit-Setup-1.0.0.exe /S /D=C:\apiext-mediakit
 
 ## 发布物怎么来的
 
-推 git 标签 `v1.2.3` 或推主分支，由 GitHub Actions 自动产出（不用手工推镜像 / 传安装包）：
+在 Actions 页面手动触发工作流产出（推代码 / 推标签都不再触发；不用手工推镜像 / 传安装包）：
 
-| 工作流 | 产物 |
-|---|---|
-| `.github/workflows/docker-image.yml` | GHCR 镜像：`latest`、`yyMMdd-HHmm`、`sha-xxxx`，标签触发另有 `1.2.3` / `1.2` |
-| `.github/workflows/windows-installer.yml` | Actions artifact；标签触发时创建/更新 Release 并附安装包 |
+| 工作流 | 触发 | 产物 |
+|---|---|---|
+| `.github/workflows/docker-image.yml` | Run workflow（可指定平台 / 是否推送） | GHCR 镜像：`yyMMdd-HHmm`、`sha-xxxx`；默认分支另打 `latest` |
+| `.github/workflows/windows-installer.yml` | Run workflow（`publish=true` 默认发布） | Actions artifact；发布时创建/更新 Release 并附安装包 |
+
+版本号统一为 `yyMMdd-HHmm`（Asia/Shanghai，如 `261117-1140`），两个工作流自动生成，无需 git 标签。
 
 Windows 安装包的第三方载荷（ZLMediaKit Windows 产物、ffmpeg、NSSM）不进仓库，由 `fetch-payload.ps1` 在打包时下载，CI 与本地共用同一脚本。
 

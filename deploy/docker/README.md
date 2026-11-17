@@ -85,7 +85,7 @@ bash install.sh --yes      # 非交互：全部用默认值/环境变量，适�
 
 **发行版兼容**：Debian/Ubuntu（apt）、RHEL/CentOS/Rocky/AlmaLinux/Fedora/openEuler/Anolis（dnf/yum）。工具缺失自动降级——`ss` → `netstat` → 跳过；`curl` → `wget` → 仅做 TCP 探测；`systemctl` → `service`；`docker compose`（v2）→ `docker-compose`（v1）；修改 `daemon.json` 用 `python3` → `jq` → `sed` 兜底。
 
-> 镜像默认取自 `ghcr.io/apiext-labs/apiext-mediakit:latest`（公开包无需登录）。私有包或指定版本时：先 `echo <PAT> | docker login ghcr.io -u <用户名> --password-stdin`，再 `IMAGE=ghcr.io/apiext-labs/apiext-mediakit:1.2.3 bash install.sh`；也可用 `REGISTRY_USER` / `REGISTRY_PASSWORD` 让脚本代登录。
+> 镜像默认取自 `ghcr.io/apiext-labs/apiext-mediakit:latest`（公开包无需登录）。私有包或指定版本时：先 `echo <PAT> | docker login ghcr.io -u <用户名> --password-stdin`，再 `IMAGE=ghcr.io/apiext-labs/apiext-mediakit:261117-1140 bash install.sh`；也可用 `REGISTRY_USER` / `REGISTRY_PASSWORD` 让脚本代登录。
 >
 > 非 root 用户请 `sudo bash install.sh`（需要写 `/etc/docker/daemon.json` 与安装目录）。
 
@@ -323,10 +323,10 @@ docker logs --tail=50 apiext-mediakit | grep '\[Startup\]'
 
 ```bash
 # 建议每次构建后给镜像打 tag，回滚时改 compose 的 image 即可
-docker tag apiext-mediakit apiext-mediakit:2026-11-12
+docker tag apiext-mediakit apiext-mediakit:261117-1140
 # 回滚
 docker compose down
-# 修改 docker-compose.yml: image: apiext-mediakit:2026-11-12  （并注释掉 build）
+# 修改 docker-compose.yml: image: apiext-mediakit:261117-1140  （并注释掉 build）
 docker compose up -d
 ```
 

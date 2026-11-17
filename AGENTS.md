@@ -25,7 +25,7 @@
 
 - .NET **10** SDK（10.0.101 起），VS 2022 17.13+ / Rider / VS Code 均可；解决方案是 `Apiext.MediaKit.slnx`（XML slnx，SDK 9+）。
 - 一个可访问的 **ZLMediaKit**：本地最快 `docker compose -f deploy/docker/docker-compose.zlm.yml up -d`（只起 ZLM，端口 28180），或指向已有 ZLM。
-- 可选：Docker（构建镜像）、NSIS（打 Windows 安装包）、Git（打标签发版）。
+- 可选：Docker（构建镜像）、NSIS（打 Windows 安装包）、Git（版本管理）。
 
 ### 2.2 启动
 
@@ -205,14 +205,14 @@ dotnet build Apiext.MediaKit.slnx                 # 常规构建（0 错误；CS
 
 `fetch-payload.ps1` 的 ZLM 产物优先 `-ZlmArtifactUrl`（本地 zip / 直链），其次 `-Token` 走 GitHub API（需能读 ZLMediaKit 仓库 Actions 的 PAT，仓库自带 `GITHUB_TOKEN` 不行），默认走 nightly.link 免登录直链；ffmpeg 来自 gyan.dev，NSSM 来自 nssm.cc 2.24。`app/` `zlm/` `ffmpeg/` `nssm.exe` 与安装包都在 `deploy/windows/.gitignore` 里，**不入库**。
 
-### CI（发布只走 GitHub Actions，不手工推镜像/传包）
+### CI（发布只走 GitHub Actions，且只手动触发）
 
 | 工作流 | 触发 | 产物 |
 |---|---|---|
-| `.github/workflows/docker-image.yml` | 推 main / 推 `v*` / 手动 | `ghcr.io/<owner>/<repo>`：`latest`、`yyMMdd-HHmm`、`sha-xxxx`；标签触发另有 `1.2.3` / `1.2` |
-| `.github/workflows/windows-installer.yml` | 推 main / 推 `v*` / 手动 | Actions artifact；标签触发创建/更新 Release 并附安装包 |
+| `.github/workflows/docker-image.yml` | 手动（可指定平台 / 是否推送） | `ghcr.io/<owner>/<repo>`：`yyMMdd-HHmm`、`sha-xxxx`；默认分支另打 `latest` |
+| `.github/workflows/windows-installer.yml` | 手动（`publish=true` 默认发布 / `false` 只出 artifact） | Actions artifact；发布时创建/更新 Release 并附安装包 |
 
-- 版本号唯一来源是 git 标签 `v1.2.3`；`windows-installer.yml` 把版本写进 `installer.nsi` 的 `APP_VERSION`（**文件是 UTF-8 BOM 且 `Unicode true`，改写必须保留 BOM**，否则中文乱码）。
+- 版本号统一为 `yyMMdd-HHmm`（Asia/Shanghai，如 `261117-1140`），两个工作流自动生成，不再依赖 git 标签；`windows-installer.yml` 把版本写进 `installer.nsi` 的 `APP_VERSION`（**文件是 UTF-8 BOM 且 `Unicode true`，改写必须保留 BOM**，否则中文乱码）。
 - Docker 构建上下文是仓库根：`deploy/docker/docker-compose.yml` 的 `context: ../..`、`dockerfile: deploy/docker/Dockerfile`；GHCR 用 `GITHUB_TOKEN` 登录，无需额外 secret。
 - 新增发布目标就再加一个 workflow，不引入其它自建仓库 / 自建 CI 脚本。
 
@@ -245,5 +245,5 @@ dotnet build Apiext.MediaKit.slnx                 # 常规构建（0 错误；CS
 - [x] M7 取流模式、高级配置整合
 - [x] M8 播放令牌 + WebHook 鉴权 + 录像索引对账 + 端口预检
 - [x] M9 界面质量（云台 UI 统一、播放失败提示、三态、样式归位）
-- [x] M10 Windows 原生交付 + GitHub Actions 自动发布
+- [x] M10 Windows 原生交付 + GitHub Actions 手动发布
 - [ ] 后续：RBAC 多用户、录像回放时间轴拖拽、云台预置位 UI 增强、移动端适配、表单内联校验
