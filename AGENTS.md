@@ -205,6 +205,8 @@ dotnet build Apiext.MediaKit.slnx                 # 常规构建（0 错误；CS
 
 `fetch-payload.ps1` 的 ZLM 产物优先 `-ZlmArtifactUrl`（本地 zip / 直链），其次 `-Token` 走 GitHub API（需能读 ZLMediaKit 仓库 Actions 的 PAT，仓库自带 `GITHUB_TOKEN` 不行），默认走 nightly.link 免登录直链；ffmpeg 来自 gyan.dev，NSSM 来自 nssm.cc 2.24。`app/` `zlm/` `ffmpeg/` `nssm.exe` 与安装包都在 `deploy/windows/.gitignore` 里，**不入库**。
 
+VC++ 运行库按需处理：`vc_redist.x64.exe` 只是可选离线载荷（`File /nonfatal`，不入库、默认不内置），向导检测 `VCRUNTIME140*.dll` / `MSVCP140.dll` 后才显示第 3 页；`install.ps1 -InstallVcRuntime` 控制是否下载安装，下载/安装/服务启动失败都只记警告与 `install-report.txt` 的「安装警告」，不阻断安装（卸载入口在调用 `install.ps1` **之前**写入）。
+
 ### CI（发布只走 GitHub Actions，且只手动触发）
 
 | 工作流 | 触发 | 产物 |

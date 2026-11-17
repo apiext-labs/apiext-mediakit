@@ -119,6 +119,7 @@ jobs:
 
             - `Apiext-MediaKit-Setup-${{ steps.version.outputs.version }}.exe`：内置 .NET 10 自包含运行时 + ZLMediaKit + ffmpeg + NSSM
             - 目标机无需 Docker、无需安装 .NET，双击运行即可；静默安装：`/S /D=C:\apiext-mediakit`
+            - 缺 VC++ 2015-2022 x64 运行库时，向导检测后按需下载并静默安装；离线场景把 `vc_redist.x64.exe` 放到 `deploy/windows/` 后重新打包即可
             - 默认端口：管理平台 **28080**、ZLM HTTP 28180、RTSP 28554、RTMP 28335、WebRTC 28000、SRT 29000、国标 SIP 28060、RTP 21000 / UDP 24000-24500（向导内可改）
             - 装完两个服务开机自启：`Apiext-MediaKit-App` / `Apiext-MediaKit-ZLM`；账号密码与各项密钥见安装目录 `install-report.txt`
 

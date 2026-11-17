@@ -25,7 +25,8 @@ deploy/windows/
 ├─ app/                      ← publish-app.ps1 生成（不要手工改）
 ├─ zlm/                      ← ZLMediaKit Windows 版（MediaServer.exe、default.pem、www\record）
 ├─ ffmpeg/                   ← ffmpeg.exe（「兼容」取流与抓拍）
-└─ nssm.exe                  ← NSSM（托管两个服务；安装包已内置）
+├─ nssm.exe                  ← NSSM（托管两个服务；安装包已内置）
+└─ vc_redist.x64.exe         ← 可选：VC++ 2015-2022 x64 运行库（离线环境放这里；默认不内置）
 ```
 
 安装后的目标机目录：
@@ -53,6 +54,9 @@ C:\apiext-mediakit\
 | ZLMediaKit | 必须放到 `deploy\windows\zlm\`：`MediaServer.exe`（Windows 编译版）+ `default.pem` + 依赖 dll |
 | NSSM | 可选但推荐，见下方说明 |
 | ffmpeg | 可选：`ffmpeg.exe` 放 `deploy\windows\ffmpeg\`，否则「兼容」取流与抓拍快照不可用 |
+| VC++ 运行库 | `MediaServer.exe` 依赖 VC++ 2015-2022 x64；向导会检测并按需联网下载，离线可放 `vc_redist.x64.exe` |
+
+> **ZLM 起不来的首要原因**：干净的 Windows Server 常缺 `VCRUNTIME140.dll` / `VCRUNTIME140_1.dll` / `MSVCP140.dll`，启动 `MediaServer.exe` 会弹「系统错误：找不到 VCRUNTIME140_1.dll」，NSSM 则报 `无法启动服务 Apiext-MediaKit-ZLM`。安装包**不内置** 25 MB 的 `vc_redist.x64.exe`（NSIS 用 `File /nonfatal` 可选打包），默认由向导页按需从 `https://aka.ms/vs/17/release/vc_redist.x64.exe` 下载并静默安装；下载或安装失败**不阻断安装**，只提示手动安装后执行 `Start-Service Apiext-MediaKit-ZLM`（无 NSSM 时用 `schtasks /Run /TN Apiext-MediaKit-ZLM`）。
 
 ### 为什么 ZLM 需要 NSSM 或计划任务
 
@@ -91,11 +95,14 @@ powershell -ExecutionPolicy Bypass -File deploy\windows\build-installer.ps1
 
 1. 向导页 1「配置访问地址」：**对外 IP**（默认预填本机第一个内网 IPv4）+ **应用端口**（默认 28080，与 Docker 版宿主端口一致）；
 2. 向导页 2「配置流媒体端口」：ZLM HTTP / RTSP / RTMP / WebRTC / SRT / 国标 SIP / RTP 收流 与 **RTP UDP 端口范围**（默认 24000-24500），端口冲突时才需要改；退出前会校验 1-65535、互不重复、UDP 范围格式；
-3. 载荷解到 `%TEMP%`，调用 `install.ps1 -InstallDir <安装目录> -PublicHost <IP> -AppPort <端口> -ZlmHttpPort ... -RtpPortRange <范围> -Force`；
-4. 完成后写入 `安装目录\Uninstall.exe`、注册表卸载项（控制面板可见）、`管理平台.url` 快捷方式；
-5. 完成页可一键打开**安装报告**（含账号密码、各项密钥与实际端口）和**管理平台**。
+3. 向导页 3「VC++ 运行库」：**仅在目标机缺 VC++ 2015-2022 x64 运行库时出现**（已装则自动跳过），默认勾选「安装时自动下载并安装」，并提供「打开官方下载页」按钮；取消勾选或下载失败只影响 ZLM 启动，不阻断安装；
+4. 载荷解到 `%TEMP%`，调用 `install.ps1 -InstallDir <安装目录> -PublicHost <IP> -AppPort <端口> -ZlmHttpPort ... -RtpPortRange <范围> -InstallVcRuntime <0|1> -Force`；`install.ps1` 优先用随包的 `vc_redist.x64.exe`，没有才联网下载；
+5. 卸载入口（`安装目录\Uninstall.exe` + 注册表卸载项）在调用 `install.ps1` **之前**就已写入，安装完成后再写 `管理平台.url` 快捷方式；
+6. 完成页可一键打开**安装报告**（含账号密码、各项密钥与实际端口）和**管理平台**。
 
 注意：安装过程需要 `%TEMP%` 至少约 200 MB 空闲（自包含应用载荷先落临时目录），安装目录约需 400 MB。
+
+> **服务启动失败不会中断安装**：`Start-Service` / `schtasks /Run` 失败（例如目标机缺 VC++ 运行库）只记 `[WARN]`，安装照常做健康检查、写 `install-report.txt` 并正常收尾，**不会让 NSIS 弹「安装失败 → Abort」**。卸载入口已提前落地，任何情况下都能从控制面板卸载。所有服务警告会汇总到 `install-report.txt` 的「安装警告」段，并附上修复后的手工启动命令（`Start-Service Apiext-MediaKit-ZLM` / `Start-Service Apiext-MediaKit-App`）。
 
 > **给打包维护者的坑**：`installer.nsi` 里每组 `File /r "app\*.*"` / `zlm\*.*` / `ffmpeg\*.*` **前必须先 `SetOutPath` 到 `$PLUGINSDIR\payload\<同名子目录>`**。NSIS 的 `File /r` 只把目录「内容」平铺进当前 `$OUTDIR`，不会自动创建 `app\`、`zlm\` 这层；而 `install.ps1` 是按 `$PSScriptRoot\app` / `zlm` / `ffmpeg` 找载荷的。少写这行就会出现「未找到 …\payload\app\Apiext.MediaKit.Server.exe」，且三组文件互相覆盖混在一起。
 
@@ -104,7 +111,7 @@ powershell -ExecutionPolicy Bypass -File deploy\windows\build-installer.ps1
 ```powershell
 Apiext-MediaKit-Setup-261117-1140.exe /S /D=C:\apiext-mediakit
 ```
-> `/S` 静默时不会弹参数页，脚本取 `detect-ip.ps1` 探测到的 IP 与全部默认端口（28080 / 28180 / 28554 / 28335 / 28000 / 29000 / 21000 / 28060 / 24000-24500）；需要自定义地址或端口时请用交互安装，或直接跑 `install.ps1` 传参。
+> `/S` 静默时不会弹参数页，脚本取 `detect-ip.ps1` 探测到的 IP 与全部默认端口（28080 / 28180 / 28554 / 28335 / 28000 / 29000 / 21000 / 28060 / 24000-24500）；缺 VC++ 运行库时按默认勾选联网下载安装（不联网就随包放 `vc_redist.x64.exe`，或直接跑 `install.ps1 -InstallVcRuntime $false`）。需要自定义地址或端口时请用交互安装，或直接跑 `install.ps1` 传参。
 
 ---
 
@@ -124,6 +131,8 @@ Apiext-MediaKit-Setup-261117-1140.exe /S /D=C:\apiext-mediakit
 | `zlm\` | ZLMediaKit 官方 Actions 产物（nightly.link 免登录直链） | `-ZlmArtifactUrl`（本地 zip 或直链）/ `-Token`（走 GitHub API） |
 | `ffmpeg\` | gyan.dev essentials build | `-FfmpegUrl` |
 | `nssm.exe` | nssm.cc 2.24 win64 | `-NssmUrl` |
+
+> `vc_redist.x64.exe` **不在** `fetch-payload.ps1` 的下载清单里：安装包默认不内置，由目标机向导按需联网下载。完全离线交付时，先从 `https://aka.ms/vs/17/release/vc_redist.x64.exe` 下载并放到 `deploy/windows/`，再执行 `build-installer.ps1`（NSIS 的 `File /nonfatal` 会自动把它打进包）。
 
 本地想走同一套流程：
 
@@ -156,10 +165,11 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -PublicHost 192.168.1.100
 | `-RtpPortRange` | `24000-24500` | 国标 RTP 收流 UDP 端口段（格式 `起始-结束`，起始须小于结束） |
 | `-AdminPassword` | 随机生成 | 初始管理员密码（旧库已存在则沿用库里的） |
 | `-ApiSecret` / `-HookSecret` / `-PlayTokenSecret` / `-JwtKey` / `-GbPassword` | 随机生成 | 留空自动随机；填值便于多机统一 |
+| `-InstallVcRuntime` | `true`（向导复选框） | 缺 VC++ 运行库时是否自动下载/安装；`false` 只警告不安装 |
 | `-SkipFirewall` | 否 | 跳过防火墙规则（手工开端口时用） |
 | `-SkipServices` | 否 | 只铺文件与配置，不注册服务 |
 
-安装脚本会自动做：**端口校验（1-65535、互不重复、UDP 范围合法）** → 目录规划 → 复制程序 → 生成 `appsettings.Production.json` → 生成 `zlm\config.ini`（含 17 个带 `?cap=` 的 hook URL，HMAC 由脚本现算）→ 防火墙放行 → 注册并启动服务 → 健康检查 → 写 `install-report.txt`。端口填错会在最开头直接报错退出，不会装到一半才失败。
+安装脚本会自动做：**端口校验（1-65535、互不重复、UDP 范围合法）** → 目录规划 → 复制程序 → **检测并安装 VC++ 运行库**（优先 payload 里的本地文件，否则联网下载）→ 生成 `appsettings.Production.json` → 生成 `zlm\config.ini`（含 17 个带 `?cap=` 的 hook URL，HMAC 由脚本现算）→ 防火墙放行 → 注册并启动服务 → 健康检查 → 写 `install-report.txt`。端口填错会在最开头直接报错退出，不会装到一半才失败。
 
 > `?cap=` 只签 `mediaServerId + event`，**改端口/改 IP 不需要重算**，重新跑一次 install.ps1 会整体重建。
 
@@ -230,7 +240,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -RemoveData
 | 现象 | 排查 |
 |---|---|
 | `sc start` 报 1053 | ZLM 不能用 `sc.exe`，用 NSSM 或计划任务；应用侧请确认用的是本包发布的 exe（已内置 `UseWindowsService`） |
-| `MediaServer.exe` 起不来、事件日志报缺 `MSVCP140.dll` / `VCRUNTIME140.dll` | 官方 ZLM Windows 产物动态链接 VC++ 运行库，干净系统需装 **VC++ 2015-2022 x64 运行库**（`vc_redist.x64.exe`）；也可把这几个 dll 放到安装目录 `zlm\` 下 |
+| `MediaServer.exe` 起不来、事件日志报缺 `MSVCP140.dll` / `VCRUNTIME140.dll` / `VCRUNTIME140_1.dll` | 官方 ZLM Windows 产物动态链接 VC++ 运行库；安装包向导会按需下载并静默安装 **VC++ 2015-2022 x64 运行库**（`vc_redist.x64.exe`）。若当时取消勾选或离线无网：手动装运行库后执行 `Start-Service Apiext-MediaKit-ZLM`（无 NSSM 时 `schtasks /Run /TN Apiext-MediaKit-ZLM`），或把这几个 dll 放到安装目录 `zlm\` 下；服务未启动会记在 `install-report.txt` 的「安装警告」段 |
 | 应用启动即退出 / 找不到 appsettings | 必须走服务或在本目录运行；已把 ContentRoot 固定为程序目录，手工运行时也要 `cd` 到 `app\` |
 | 登录后页面 500、提示数据库只读 | `APP_DATA` 目录权限不足；用有写权限的账号或把目录移到非系统盘 |
 | 播放地址是 127.0.0.1 / 内网错网卡 | 服务本身监听 `0.0.0.0`，能访问但**播放地址里带的主机名不对**：`-PublicHost` 传错，或有多网卡（Hyper-V/VMware 虚拟网卡）时自动探测取了虚拟网卡，需显式指定真实局域网 IP |
@@ -253,6 +263,8 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -RemoveData
 | ffmpeg | 9.0.2 essentials build（gyan.dev） | 「兼容」取流、G711→AAC、抓拍 | GPL（分发时需随包提供许可与源码获取方式） |
 | NSSM | 2.24（win64） | 把 MediaServer.exe 托管成 Windows 服务 | 公共领域 |
 | .NET 运行时 | 10.0（自包含发布，随 app 目录） | 应用运行时 | MIT |
+
+> **VC++ 运行库默认不进包**：`vc_redist.x64.exe`（约 25 MB）只是可选离线载荷（NSIS `File /nonfatal`），放到 `deploy/windows/` 再打包才会内置，体积相应增加；不放时由目标机向导按需联网下载并静默安装。
 
 > 说明：只从 ZLM 产物里取了 `MediaServer.exe`、`default.pem` 与空的 `www\record`（去掉了 test_* 示例与 swagger 页面，减少体积也避免暴露调试界面）。ZLM 的 `mk_api.dll` 是 C API 用库，`MediaServer.exe` 自身静态链接，不需要。
 >

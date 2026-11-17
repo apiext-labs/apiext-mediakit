@@ -3,6 +3,8 @@ app/
 zlm/
 ffmpeg/
 nssm.exe
+# 可选离线载荷：VC++ 2015-2022 x64 运行库（默认不内置，离线打包时手工放）
+vc_redist.x64.exe
 
 # 打包与临时产物
 *.zip

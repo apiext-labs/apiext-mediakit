@@ -60,6 +60,13 @@ $nsiEncoding = New-Object System.Text.UTF8Encoding($true)
 Write-Host "版本号: $Version"
 
 $appSize = [math]::Round(((Get-ChildItem (Join-Path $dir "app") -Recurse -File | Measure-Object -Sum Length).Sum / 1MB), 1)
+$vcLocal = Join-Path $dir "vc_redist.x64.exe"
+$vcInfo = if (Test-Path $vcLocal) {
+    "随包内置离线载荷 vc_redist.x64.exe（+$([math]::Round((Get-Item $vcLocal).Length / 1MB, 1)) MB）"
+} else {
+    "不内置（目标机缺运行库时按需联网下载）"
+}
+Write-Host "VC++ 运行库: $vcInfo"
 Write-Host "makensis: $makensis"
 Write-Host "载荷体积: app $appSize MB + zlm/ffmpeg/nssm，开始编译（LZMA 压缩较慢，约 2-5 分钟）..."
 Write-Host ""

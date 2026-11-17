@@ -19,7 +19,7 @@ deploy/
    ├─ publish-app.ps1       # .NET 自包含发布 → app\
    ├─ fetch-payload.ps1     # 下载 ZLM / ffmpeg / NSSM 载荷（不入库）
    ├─ build-installer.ps1   # NSIS 编译单文件安装包
-   ├─ installer.nsi         # 安装包脚本（两页参数向导）
+   ├─ installer.nsi         # 安装包脚本（参数向导，含按需出现的 VC++ 运行库页）
    ├─ install.ps1           # 铺文件 / 生成配置 / 放行防火墙 / 注册服务
    ├─ uninstall.ps1          # 卸载（可保留数据）
    ├─ detect-ip.ps1         # 向导预填本机 IPv4
@@ -94,7 +94,7 @@ Apiext-MediaKit-Setup-1.0.0.exe /S /D=C:\apiext-mediakit
 
 版本号统一为 `yyMMdd-HHmm`（Asia/Shanghai，如 `261117-1140`），两个工作流自动生成，无需 git 标签。
 
-Windows 安装包的第三方载荷（ZLMediaKit Windows 产物、ffmpeg、NSSM）不进仓库，由 `fetch-payload.ps1` 在打包时下载，CI 与本地共用同一脚本。
+Windows 安装包的第三方载荷（ZLMediaKit Windows 产物、ffmpeg、NSSM）不进仓库，由 `fetch-payload.ps1` 在打包时下载，CI 与本地共用同一脚本。VC++ 2015-2022 x64 运行库默认不内置：目标机缺失时向导按需联网下载安装，离线场景把 `vc_redist.x64.exe` 放到 `deploy/windows/` 再打包即可（详见 `windows/README.md`）。
 
 ## 文档导览
 

@@ -3,8 +3,9 @@
     Apiext MediaKit Windows 原生部署安装脚本（.NET 应用 + ZLMediaKit 双服务）。
 
 .DESCRIPTION
-    一次性完成：目录规划 → 复制程序 → 生成配置（含 HMAC 签名后的 17 个 ZLM WebHook URL）
-    → 防火墙放行 → 注册并启动服务 → 健康检查 → 输出访问地址与凭据。
+    一次性完成：目录规划 → 复制程序 → 检测并安装 VC++ 运行库（ZLMediaKit 依赖）
+    → 生成配置（含 HMAC 签名后的 17 个 ZLM WebHook URL）→ 防火墙放行
+    → 注册并启动服务 → 健康检查 → 输出访问地址与凭据。
 
     服务选择策略（自动）：
       · 脚本目录下有 nssm.exe  → 用 NSSM 注册两个服务（推荐：崩溃自动重启、日志落文件）
@@ -32,6 +33,7 @@
       zlm\        ZLMediaKit Windows 版（MediaServer.exe、default.pem 及依赖 dll）
       ffmpeg\     ffmpeg.exe（"兼容"取流模式、抓拍需要；缺失只影响这两项）
       nssm.exe    可选，放进来就优先用它托管服务
+      vc_redist.x64.exe  可选：VC++ 2015-2022 x64 运行库（离线环境放这里；缺失且允许时自动从 aka.ms 下载）
 #>
 [CmdletBinding()]
 param(
@@ -59,6 +61,8 @@ param(
     [string]$GbPassword = "",
 
     [string]$AppSource = "",
+    # 目标机缺 VC++ 2015-2022 x64 运行库时是否自动安装（向导页可关；默认开启）
+    [bool]$InstallVcRuntime = $true,
     [switch]$SkipFirewall,
     [switch]$SkipServices,
     [switch]$Force
@@ -101,6 +105,93 @@ function Invoke-Native([string]$exe, [string[]]$argv) {
 function Invoke-NativeRequired([string]$exe, [string[]]$argv, [string]$desc) {
     $code = Invoke-Native $exe $argv
     if ($code -ne 0) { throw "$desc 失败（$exe 退出码 $code）" }
+}
+
+# ── VC++ 2015-2022 x64 运行库（ZLMediaKit 依赖）────────────────────
+# MediaServer.exe 是 MSVC 编译的，缺 VCRUNTIME140_1.dll / VCRUNTIME140.dll / MSVCP140.dll 时
+# 会弹「系统错误」并退出，NSSM 表现为「服务无法启动」。默认按需自动装，失败也不阻断安装。
+function Test-VcRuntime {
+    # 32 位 PowerShell 访问 System32 会被 WOW64 重定向到 SysWOW64（那里没有 x64 运行库）；
+    # Sysnative 是访问真实 System32 的别名，64 位进程下它不存在，走 System32 即可。
+    $dirs = @((Join-Path $env:SystemRoot "Sysnative"), (Join-Path $env:SystemRoot "System32"))
+    foreach ($name in @('VCRUNTIME140.dll', 'VCRUNTIME140_1.dll', 'MSVCP140.dll')) {
+        $found = $false
+        foreach ($d in $dirs) {
+            if (Test-Path (Join-Path $d $name)) { $found = $true; break }
+        }
+        if (-not $found) { return $false }
+    }
+    return $true
+}
+
+function Ensure-VcRuntime {
+    $hint = "请手动安装 https://aka.ms/vs/17/release/vc_redist.x64.exe 后启动 ZLM（Start-Service $ZlmServiceName 或 schtasks /Run /TN $ZlmTaskName）"
+
+    if (Test-VcRuntime) {
+        Write-Ok "VC++ 2015-2022 x64 运行库已就绪"
+        return
+    }
+    if (-not $InstallVcRuntime) {
+        Write-Warn2 "已跳过 VC++ 运行库安装：ZLMediaKit 可能无法启动。$hint"
+        return
+    }
+
+    Write-Step "安装 VC++ 2015-2022 x64 运行库（ZLMediaKit 依赖）"
+
+    # 优先用 payload 里的本地文件（离线场景）；没有再联网下载，不塞进安装包
+    $local = Join-Path $PSScriptRoot "vc_redist.x64.exe"
+    $installer = $local
+    $tempFile = Join-Path $env:TEMP "apiext-vc_redist.x64.exe"
+
+    if (-not (Test-Path $local)) {
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' `
+                -OutFile $tempFile -UseBasicParsing -TimeoutSec 180
+        }
+        catch {
+            Write-Warn2 "下载 VC++ 运行库失败：$($_.Exception.Message)"
+        }
+
+        if ((Test-Path $tempFile) -and (Get-Item $tempFile).Length -gt 1MB) {
+            $installer = $tempFile
+            Write-Ok "已下载 VC++ 运行库安装包"
+        }
+        else {
+            if (Test-Path $tempFile) { Remove-Item $tempFile -Force -ErrorAction SilentlyContinue }
+            Write-Warn2 "未能获取 VC++ 运行库安装包（无网络或被拦截）：ZLMediaKit 可能无法启动。$hint"
+            return
+        }
+    }
+    else {
+        Write-Ok "使用随包提供的 vc_redist.x64.exe"
+    }
+
+    # 0 = 成功，3010 = 成功但需重启（DLL 通常已可用）
+    # 注意：vc_redist 是 GUI 程序，用 & 调用 PowerShell 不会等它结束；必须 Start-Process -Wait
+    try {
+        $proc = Start-Process -FilePath $installer -ArgumentList @('/install', '/quiet', '/norestart') -Wait -PassThru
+        $rc = $proc.ExitCode
+    }
+    catch {
+        Write-Warn2 "运行 VC++ 运行库安装包失败：$($_.Exception.Message)。$hint"
+        return
+    }
+    if ($rc -eq 0 -or $rc -eq 3010) {
+        if (Test-VcRuntime) {
+            Write-Ok "VC++ 运行库安装完成"
+        }
+        else {
+            Write-Warn2 "安装返回 $rc 但 DLL 仍未就绪（可能需要重启）：$hint"
+        }
+    }
+    else {
+        Write-Warn2 "VC++ 运行库安装返回 $rc（0 / 3010 才是成功）：$hint"
+    }
+
+    if ($installer -eq $tempFile -and (Test-Path $tempFile)) {
+        Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Assert-Admin {
@@ -272,6 +363,9 @@ if ($hasFfmpeg) {
 else {
     Write-Warn2 "未提供 deploy\windows\ffmpeg\ffmpeg.exe：'兼容'取流模式与抓拍快照将不可用（其余功能不受影响）"
 }
+
+# 必须在启动 ZLM 服务之前：缺运行库会直接弹「找不到 VCRUNTIME140_1.dll」
+Ensure-VcRuntime
 
 # ─────────────────────────── 生成密钥 ───────────────────────────
 
@@ -462,66 +556,113 @@ else {
 $zlmParams = "-c `"$iniPath`" -l 0"
 if (Test-Path $pem) { $zlmParams = "-s default.pem " + $zlmParams }
 
+# 服务注册/启动阶段的警告一律只记录，不允许中断安装：
+# NSIS 一旦 Abort，Uninstall.exe 与注册表卸载项就写不进去，用户反而没法卸载。
+$serviceWarnings = New-Object 'System.Collections.Generic.List[string]'
+
 if (-not $SkipServices) {
     Write-Step "注册并启动服务（$(if ($hasNssm) { 'NSSM' } else { 'sc.exe + 计划任务' })）"
 
-    Stop-AndDeleteService $AppServiceName
-    Stop-AndDeleteService $ZlmServiceName
-    # 任务不存在时 schtasks /Delete 会往 stderr 写「错误: 系统找不到指定的文件。」，
-    # 必须走 Invoke-Native（内部降 EAP 并把 stderr 并入输出丢弃），否则 $ErrorActionPreference='Stop' 下会中断安装
-    Invoke-Native 'schtasks.exe' @('/Delete', '/TN', $ZlmTaskName, '/F') | Out-Null
+    $registered = $false
+    try {
+        Stop-AndDeleteService $AppServiceName
+        Stop-AndDeleteService $ZlmServiceName
+        # 任务不存在时 schtasks /Delete 会往 stderr 写「错误: 系统找不到指定的文件。」，
+        # 必须走 Invoke-Native（内部降 EAP 并把 stderr 并入输出丢弃），否则 $ErrorActionPreference='Stop' 下会中断安装
+        Invoke-Native 'schtasks.exe' @('/Delete', '/TN', $ZlmTaskName, '/F') | Out-Null
 
-    if ($hasNssm) {
-        & $nssm install $AppServiceName (Join-Path $appDir $appExeName) | Out-Null
-        & $nssm set $AppServiceName AppDirectory $appDir | Out-Null
-        & $nssm set $AppServiceName DisplayName "Apiext MediaKit 管理平台" | Out-Null
-        & $nssm set $AppServiceName Description "Apiext MediaKit 管理平台（Blazor + Web API）" | Out-Null
-        & $nssm set $AppServiceName Start SERVICE_AUTO_START | Out-Null
-        & $nssm set $AppServiceName AppStdout (Join-Path $logDir "app.out.log") | Out-Null
-        & $nssm set $AppServiceName AppStderr (Join-Path $logDir "app.err.log") | Out-Null
-        & $nssm set $AppServiceName AppRotateFiles 1 | Out-Null
-        & $nssm set $AppServiceName AppRotateBytes 10485760 | Out-Null
-        & $nssm set $AppServiceName AppExit Default Restart | Out-Null
-        & $nssm set $AppServiceName AppRestartDelay 3000 | Out-Null
+        if ($hasNssm) {
+            & $nssm install $AppServiceName (Join-Path $appDir $appExeName) | Out-Null
+            & $nssm set $AppServiceName AppDirectory $appDir | Out-Null
+            & $nssm set $AppServiceName DisplayName "Apiext MediaKit 管理平台" | Out-Null
+            & $nssm set $AppServiceName Description "Apiext MediaKit 管理平台（Blazor + Web API）" | Out-Null
+            & $nssm set $AppServiceName Start SERVICE_AUTO_START | Out-Null
+            & $nssm set $AppServiceName AppStdout (Join-Path $logDir "app.out.log") | Out-Null
+            & $nssm set $AppServiceName AppStderr (Join-Path $logDir "app.err.log") | Out-Null
+            & $nssm set $AppServiceName AppRotateFiles 1 | Out-Null
+            & $nssm set $AppServiceName AppRotateBytes 10485760 | Out-Null
+            & $nssm set $AppServiceName AppExit Default Restart | Out-Null
+            & $nssm set $AppServiceName AppRestartDelay 3000 | Out-Null
 
-        & $nssm install $ZlmServiceName (Join-Path $zlmDir "MediaServer.exe") | Out-Null
-        & $nssm set $ZlmServiceName AppDirectory $zlmDir | Out-Null
-        & $nssm set $ZlmServiceName AppParameters $zlmParams | Out-Null
-        & $nssm set $ZlmServiceName DisplayName "Apiext MediaKit 流媒体服务（ZLMediaKit）" | Out-Null
-        & $nssm set $ZlmServiceName Description "ZLMediaKit 流媒体引擎" | Out-Null
-        & $nssm set $ZlmServiceName Start SERVICE_AUTO_START | Out-Null
-        & $nssm set $ZlmServiceName AppStdout (Join-Path $logDir "zlm.out.log") | Out-Null
-        & $nssm set $ZlmServiceName AppStderr (Join-Path $logDir "zlm.err.log") | Out-Null
-        & $nssm set $ZlmServiceName AppRotateFiles 1 | Out-Null
-        & $nssm set $ZlmServiceName AppRotateBytes 10485760 | Out-Null
-        & $nssm set $ZlmServiceName AppExit Default Restart | Out-Null
-        & $nssm set $ZlmServiceName AppRestartDelay 3000 | Out-Null
-        Write-Ok "NSSM 服务已注册：$ZlmServiceName / $AppServiceName"
+            & $nssm install $ZlmServiceName (Join-Path $zlmDir "MediaServer.exe") | Out-Null
+            & $nssm set $ZlmServiceName AppDirectory $zlmDir | Out-Null
+            & $nssm set $ZlmServiceName AppParameters $zlmParams | Out-Null
+            & $nssm set $ZlmServiceName DisplayName "Apiext MediaKit 流媒体服务（ZLMediaKit）" | Out-Null
+            & $nssm set $ZlmServiceName Description "ZLMediaKit 流媒体引擎" | Out-Null
+            & $nssm set $ZlmServiceName Start SERVICE_AUTO_START | Out-Null
+            & $nssm set $ZlmServiceName AppStdout (Join-Path $logDir "zlm.out.log") | Out-Null
+            & $nssm set $ZlmServiceName AppStderr (Join-Path $logDir "zlm.err.log") | Out-Null
+            & $nssm set $ZlmServiceName AppRotateFiles 1 | Out-Null
+            & $nssm set $ZlmServiceName AppRotateBytes 10485760 | Out-Null
+            & $nssm set $ZlmServiceName AppExit Default Restart | Out-Null
+            & $nssm set $ZlmServiceName AppRestartDelay 3000 | Out-Null
+            Write-Ok "NSSM 服务已注册：$ZlmServiceName / $AppServiceName"
+        }
+        else {
+            $binPath = "`"$(Join-Path $appDir $appExeName)`""
+            Invoke-NativeRequired 'sc.exe' @('create', $AppServiceName, 'binPath=', $binPath, 'start=', 'auto', 'DisplayName=', 'Apiext MediaKit 管理平台') '注册应用服务'
+            Invoke-NativeRequired 'sc.exe' @('description', $AppServiceName, 'Apiext MediaKit 管理平台（Blazor + Web API）') '写入服务描述'
+            Invoke-NativeRequired 'sc.exe' @('failure', $AppServiceName, 'reset=', '86400', 'actions=', 'restart/5000/restart/10000/norestart/0') '配置服务失败重启策略'
+            Write-Ok "应用服务已注册（sc.exe）：$AppServiceName"
+
+            # /TR 传裸路径：PowerShell 会自动给含空格的参数加引号（手工套引号在 5.1 下容易被再转义）
+            Invoke-NativeRequired 'schtasks.exe' `
+                @('/Create', '/TN', $ZlmTaskName, '/SC', 'ONSTART', '/RU', 'SYSTEM', '/RL', 'HIGHEST',
+                  '/TR', (Join-Path $zlmDir 'run-zlm.cmd'), '/F') '注册 ZLM 开机计划任务'
+            Write-Ok "ZLM 已注册为开机计划任务：$ZlmTaskName（MediaServer.exe 不支持 SCM，故用计划任务）"
+        }
+        $registered = $true
+    }
+    catch {
+        $msg = "服务注册阶段异常：$($_.Exception.Message)"
+        $serviceWarnings.Add($msg)
+        Write-Warn2 $msg
+    }
+
+    # 先起流媒体，再起应用；逐项尽力启动，某个失败不影响其它服务、更不中断安装
+    if ($registered) {
+        if ($hasNssm) {
+            $startTargets = @(
+                @{ Name = $ZlmServiceName; Kind = 'service' },
+                @{ Name = $AppServiceName; Kind = 'service' }
+            )
+        }
+        else {
+            $startTargets = @(
+                @{ Name = $ZlmTaskName; Kind = 'task' },
+                @{ Name = $AppServiceName; Kind = 'service' }
+            )
+        }
+
+        $okCount = 0
+        foreach ($target in $startTargets) {
+            try {
+                if ($target.Kind -eq 'service') {
+                    Start-Service -Name $target.Name -ErrorAction Stop
+                }
+                else {
+                    Invoke-NativeRequired 'schtasks.exe' @('/Run', '/TN', $target.Name) '启动 ZLM 计划任务'
+                }
+                $okCount++
+                Write-Ok "已启动：$($target.Name)"
+            }
+            catch {
+                $msg = "启动 $($target.Name) 失败：$($_.Exception.Message)"
+                $serviceWarnings.Add($msg)
+                Write-Warn2 $msg
+            }
+        }
+
+        if ($okCount -eq $startTargets.Count) {
+            Write-Ok "服务已启动"
+        }
+        else {
+            Write-Warn2 "$okCount/$($startTargets.Count) 项已启动；未启动的可修复后手工启动，安装继续"
+        }
     }
     else {
-        $binPath = "`"$(Join-Path $appDir $appExeName)`""
-        Invoke-NativeRequired 'sc.exe' @('create', $AppServiceName, 'binPath=', $binPath, 'start=', 'auto', 'DisplayName=', 'Apiext MediaKit 管理平台') '注册应用服务'
-        Invoke-NativeRequired 'sc.exe' @('description', $AppServiceName, 'Apiext MediaKit 管理平台（Blazor + Web API）') '写入服务描述'
-        Invoke-NativeRequired 'sc.exe' @('failure', $AppServiceName, 'reset=', '86400', 'actions=', 'restart/5000/restart/10000/norestart/0') '配置服务失败重启策略'
-        Write-Ok "应用服务已注册（sc.exe）：$AppServiceName"
-
-        # /TR 传裸路径：PowerShell 会自动给含空格的参数加引号（手工套引号在 5.1 下容易被再转义）
-        Invoke-NativeRequired 'schtasks.exe' `
-            @('/Create', '/TN', $ZlmTaskName, '/SC', 'ONSTART', '/RU', 'SYSTEM', '/RL', 'HIGHEST',
-              '/TR', (Join-Path $zlmDir 'run-zlm.cmd'), '/F') '注册 ZLM 开机计划任务'
-        Write-Ok "ZLM 已注册为开机计划任务：$ZlmTaskName（MediaServer.exe 不支持 SCM，故用计划任务）"
+        $serviceWarnings.Add("服务未注册，跳过启动检查；请查看上方注册阶段的报错")
     }
-
-    # 先起流媒体，再起应用（应用对 ZLM 不可达有重试，先后顺序不敏感但先 ZLM 更干净）
-    if ($hasNssm) {
-        Start-Service -Name $ZlmServiceName
-        Start-Service -Name $AppServiceName
-    }
-    else {
-        Invoke-NativeRequired 'schtasks.exe' @('/Run', '/TN', $ZlmTaskName) '启动 ZLM 计划任务'
-        Start-Service -Name $AppServiceName
-    }
-    Write-Ok "服务已启动"
 }
 else {
     Write-Warn2 "已跳过服务注册。手工启动：`"$zlmDir\run-zlm.cmd`" 与 `"$(Join-Path $appDir $appExeName)`""
@@ -534,11 +675,14 @@ $localUrl = "http://127.0.0.1:$AppPort"
 
 if (-not $SkipServices) {
     Write-Step "健康检查"
-    if (Wait-Http -url "$localUrl/login" -timeoutSeconds 90) {
+    # 服务启动已有警告时不必等满 90 秒，尽快收尾让安装正常完成
+    $healthTimeout = 90
+    if ($serviceWarnings.Count -gt 0) { $healthTimeout = 20 }
+    if (Wait-Http -url "$localUrl/login" -timeoutSeconds $healthTimeout) {
         Write-Ok "应用已就绪：$localUrl/login"
     }
     else {
-        Write-Warn2 "应用 90 秒内未就绪，请查看日志：$logDir\app.err.log（或 事件查看器 → Windows 日志 → 应用程序）"
+        Write-Warn2 "应用 $healthTimeout 秒内未就绪，请查看日志：$logDir\app.err.log（或 事件查看器 → Windows 日志 → 应用程序）"
     }
 
     try {
@@ -579,6 +723,15 @@ JWT 密钥             : $JwtKey
 端口: 应用 $AppPort / ZLM-HTTP $ZlmHttpPort / RTSP $ZlmRtspPort / RTMP $ZlmRtmpPort / WebRTC $ZlmRtcPort / SRT $ZlmSrtPort
       国标 SIP(UDP) $GbSipPort / RTP 收流 $ZlmRtpPort / RTP UDP 范围 $RtpPortRange
 "@
+if ($serviceWarnings.Count -gt 0) {
+    $report += "`r`n--- 安装警告（服务未完全启动，安装已正常完成）---`r`n"
+    $report += (($serviceWarnings | ForEach-Object { "- $_" }) -join "`r`n")
+    $report += "`r`n`r`n修复后手工启动：`r`n  Start-Service $AppServiceName`r`n"
+    if ($hasNssm) { $report += "  Start-Service $ZlmServiceName`r`n" }
+    else { $report += "  schtasks /Run /TN $ZlmTaskName`r`n" }
+    $report += "若因缺 VC++ 2015-2022 x64 运行库导致 ZLM 未启动：先安装 https://aka.ms/vs/17/release/vc_redist.x64.exe 再执行上述命令`r`n"
+    $report += "卸载入口：安装目录\Uninstall.exe（服务异常不影响卸载）`r`n"
+}
 Write-TextFile $reportPath (ConvertTo-Crlf $report)
 
 Write-Host ""
@@ -592,3 +745,6 @@ Write-Host "  查看状态 : Get-Service $AppServiceName,$ZlmServiceName  (无 N
 Write-Host "  重启应用 : Restart-Service $AppServiceName"
 Write-Host "  查看日志 : Get-Content '$logDir\app.out.log' -Tail 50 -Wait"
 Write-Host "  卸载     : powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -RemoveData"
+
+# 服务启动失败已降级为警告：安装必须正常收尾，否则 NSIS 会 Abort、卸载入口写不进去
+exit 0

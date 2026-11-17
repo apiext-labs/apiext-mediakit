@@ -7,6 +7,7 @@
 ;   ffmpeg\    ffmpeg.exe
 ;   nssm.exe   服务托管器
 ;   install.ps1 / uninstall.ps1 / detect-ip.ps1
+;   vc_redist.x64.exe   可选（离线环境用；缺失时安装向导提示联网下载）
 ;
 ; 编译： makensis installer.nsi   或   powershell -File build-installer.ps1
 ; ─────────────────────────────────────────────────────────────────────────────
@@ -59,6 +60,8 @@ VIAddVersionKey "LegalCopyright"  "© ${APP_PUBLISHER}"
 Page custom ConfigPageCreate ConfigPageLeave
 ; 自定义参数页 2：流媒体端口
 Page custom PortPageCreate PortPageLeave
+; 自定义参数页 3：VC++ 运行库（已安装时该页自动跳过）
+Page custom VcPageCreate VcPageLeave
 
 !insertmacro MUI_PAGE_INSTFILES
 
@@ -101,6 +104,11 @@ Var HZlmSrt
 Var HZlmRtp
 Var HGbSip
 Var HRtpRange
+
+; VC++ 运行库页：$VcMissing=1 表示缺 DLL，$VcInstall=1 表示允许安装时下载安装
+Var VcMissing
+Var VcInstall
+Var HVcCheck
 
 ; NSIS 会把 "$Var:" 连读成变量名，这里分段拼出 http://IP:端口/ 避免解析歧义
 Function BuildAppUrl
@@ -149,6 +157,16 @@ FunctionEnd
     ${EndIf}
 !macroend
 
+; ── VC++ 2015-2022 x64 运行库检测 ────────────────────────────────
+; NSIS 安装器是 32 位进程，$SYSDIR 可能被 WOW64 重定向到 SysWOW64（那里没有 x64 运行库），
+; $WINDIR\Sysnative 指向真实 System32。两个路径任一命中即视为该 DLL 已存在：
+; 命中第一个就 +3 跳过本宏剩余两条指令，命中第二个就 +2 跳过 StrCpy。
+!macro CheckVcDll NAME
+    IfFileExists "$SYSDIR\${NAME}" +3 0
+    IfFileExists "$WINDIR\Sysnative\${NAME}" +2 0
+    StrCpy $VcMissing "1"
+!macroend
+
 Function .onInit
     StrCpy $AppPort "28080"
     StrCpy $ZlmHttpPort "28180"
@@ -170,6 +188,14 @@ Function .onInit
         ${TrimNewLines} $1 $1
         StrCpy $PublicHost $1
     ${EndIf}
+
+    ; 检测 VC++ 2015-2022 x64 运行库（MediaServer.exe 依赖 VCRUNTIME140_1.dll 等）
+    StrCpy $VcMissing "0"
+    !insertmacro CheckVcDll "VCRUNTIME140.dll"
+    !insertmacro CheckVcDll "VCRUNTIME140_1.dll"
+    !insertmacro CheckVcDll "MSVCP140.dll"
+    ; 默认允许自动下载安装（静默安装不显示该页，也按这个默认值执行）
+    StrCpy $VcInstall "1"
 
     Call BuildAppUrl
 FunctionEnd
@@ -337,6 +363,50 @@ Function PortPageLeave
     Delete "$PLUGINSDIR\apiext-mediakit-ports.ini"
 FunctionEnd
 
+; ────────────────── 第 3 页：VC++ 运行库（仅缺失时显示） ──────────────────
+
+Function OpenVcDownloadPage
+    ExecShell "open" "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+FunctionEnd
+
+Function VcPageCreate
+    ${If} $VcMissing == "0"
+        Abort
+    ${EndIf}
+
+    !insertmacro MUI_HEADER_TEXT "VC++ 运行库" "ZLMediaKit 需要 Microsoft Visual C++ 2015-2022 (x64) 运行库"
+
+    nsDialogs::Create 1018
+    Pop $0
+    ${If} $0 == error
+        Abort
+    ${EndIf}
+
+    ${NSD_CreateLabel} 0 0 100% 38u "本机未检测到 VC++ 2015-2022 x64 运行库（VCRUNTIME140_1.dll 等）。$\r$\nZLMediaKit（MediaServer.exe）缺它会导致流媒体服务无法启动：页面与接口能打开，但无法拉流与播放。$\r$\n建议让安装程序自动下载并安装（约 25 MB，需要联网）。"
+    Pop $0
+
+    ${NSD_CreateCheckbox} 0 44u 100% 12u "安装时自动下载并安装 VC++ 2015-2022 x64 运行库"
+    Pop $HVcCheck
+    ${If} $VcInstall == "1"
+        ${NSD_Check} $HVcCheck
+    ${Else}
+        ${NSD_Uncheck} $HVcCheck
+    ${EndIf}
+
+    ${NSD_CreateLabel} 0 62u 100% 26u "· 离线环境：把 vc_redist.x64.exe 放到安装包同目录再打包，安装程序会优先使用本地文件。$\r$\n· 取消勾选：只安装平台；之后需手动装运行库并启动 ZLM 服务（Apiext-MediaKit-ZLM）。"
+    Pop $0
+
+    ${NSD_CreateButton} 0 96u 120u 14u "打开官方下载页"
+    Pop $0
+    ${NSD_OnClick} $0 OpenVcDownloadPage
+
+    nsDialogs::Show
+FunctionEnd
+
+Function VcPageLeave
+    ${NSD_GetState} $HVcCheck $VcInstall
+FunctionEnd
+
 Function .onInstSuccess
     ; 生成「管理平台.url」供完成页一键打开（在安装完成后写入，确保端口/地址是最新的）
     WriteINIStr "$INSTDIR\管理平台.url" "InternetShortcut" "URL" "$AppUrl"
@@ -358,22 +428,12 @@ Section "Install"
     File "nssm.exe"
     File "install.ps1"
     File "uninstall.ps1"
+    ; 可选载荷：离线环境把 VC++ 运行库放本目录，install.ps1 会优先用本地文件；没有则联网下载
+    File /nonfatal "vc_redist.x64.exe"
 
-    CreateDirectory "$INSTDIR\tools"
-    CopyFiles /SILENT "$PLUGINSDIR\payload\install.ps1" "$INSTDIR\tools\"
-    CopyFiles /SILENT "$PLUGINSDIR\payload\uninstall.ps1" "$INSTDIR\tools\"
-
-    DetailPrint "正在生成配置、放行端口、注册服务（约 1-2 分钟）..."
-    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\payload\install.ps1" -InstallDir "$INSTDIR" -PublicHost "$PublicHost" -AppPort $AppPort -ZlmHttpPort $ZlmHttpPort -ZlmRtspPort $ZlmRtspPort -ZlmRtmpPort $ZlmRtmpPort -ZlmRtcPort $ZlmRtcPort -ZlmSrtPort $ZlmSrtPort -ZlmRtpPort $ZlmRtpPort -GbSipPort $GbSipPort -RtpPortRange "$RtpPortRange" -Force'
-    Pop $0
-    ${If} $0 != 0
-    ${AndIf} $0 != "ok"
-        MessageBox MB_ICONSTOP "安装失败（返回：$0）。$\r$\n$\r$\n常见原因：端口填写非法 / 端口被占用 / 权限不足。$\r$\n点「显示详细信息」可看到脚本输出的具体报错。$\r$\n$\r$\n也可查看：$\r$\n  $INSTDIR\logs\app.err.log$\r$\n  或 事件查看器 → Windows 日志 → 应用程序$\r$\n$\r$\n修复后可重新运行安装包，数据目录 APP_DATA 不会被删除。"
-        Abort
-    ${EndIf}
-
+    ; 卸载入口先落地：即使后续 install.ps1 因极端原因失败，也能从控制面板卸载并清理服务
+    CreateDirectory "$INSTDIR"
     WriteUninstaller "$INSTDIR\Uninstall.exe"
-
     WriteRegStr HKLM "${UNINST_KEY}" "DisplayName"     "${APP_NAME}"
     WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion"  "${APP_VERSION}"
     WriteRegStr HKLM "${UNINST_KEY}" "Publisher"       "${APP_PUBLISHER}"
@@ -382,6 +442,20 @@ Section "Install"
     WriteRegStr HKLM "${UNINST_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
     WriteRegDWORD HKLM "${UNINST_KEY}" "NoModify" 1
     WriteRegDWORD HKLM "${UNINST_KEY}" "NoRepair" 1
+
+    CreateDirectory "$INSTDIR\tools"
+    CopyFiles /SILENT "$PLUGINSDIR\payload\install.ps1" "$INSTDIR\tools\"
+    CopyFiles /SILENT "$PLUGINSDIR\payload\uninstall.ps1" "$INSTDIR\tools\"
+
+    DetailPrint "正在检测运行库、生成配置、放行端口、注册服务（约 1-2 分钟）..."
+    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\payload\install.ps1" -InstallDir "$INSTDIR" -PublicHost "$PublicHost" -AppPort $AppPort -ZlmHttpPort $ZlmHttpPort -ZlmRtspPort $ZlmRtspPort -ZlmRtmpPort $ZlmRtmpPort -ZlmRtcPort $ZlmRtcPort -ZlmSrtPort $ZlmSrtPort -ZlmRtpPort $ZlmRtpPort -GbSipPort $GbSipPort -RtpPortRange "$RtpPortRange" -InstallVcRuntime $VcInstall -Force'
+    Pop $0
+    ${If} $0 != 0
+    ${AndIf} $0 != "ok"
+        ; 卸载入口已在调用 install.ps1 之前写入，这里只提示而不影响卸载能力
+        MessageBox MB_ICONEXCLAMATION "安装未完全完成（返回：$0）。$\r$\n$\r$\n点「显示详细信息」查看脚本输出。$\r$\n$\r$\n卸载入口已写入，可在「控制面板 → 程序和功能」卸载，或运行：$\r$\n  $INSTDIR\Uninstall.exe$\r$\n$\r$\n修复后可重新运行安装包，数据目录 APP_DATA 不会被删除。"
+        Abort
+    ${EndIf}
 SectionEnd
 
 ; ───────────────────────────── 卸载 ─────────────────────────────
