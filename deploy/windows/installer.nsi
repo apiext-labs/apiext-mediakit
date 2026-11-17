@@ -346,10 +346,15 @@ FunctionEnd
 
 Section "Install"
     ; 载荷先解到临时目录，再由 install.ps1 复制到 $INSTDIR（避免重装时自覆盖）
-    SetOutPath "$PLUGINSDIR\payload"
+    ; 关键：File /r "app\*.*" 是把 app 的「内容」平铺进当前 $OUTDIR，不会自动建 app 目录；
+    ; install.ps1 用 $PSScriptRoot\app / zlm / ffmpeg 定位载荷，必须先显式 SetOutPath 到各自子目录。
+    SetOutPath "$PLUGINSDIR\payload\app"
     File /r "app\*.*"
+    SetOutPath "$PLUGINSDIR\payload\zlm"
     File /r "zlm\*.*"
+    SetOutPath "$PLUGINSDIR\payload\ffmpeg"
     File /r "ffmpeg\*.*"
+    SetOutPath "$PLUGINSDIR\payload"
     File "nssm.exe"
     File "install.ps1"
     File "uninstall.ps1"

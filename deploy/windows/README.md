@@ -97,6 +97,8 @@ powershell -ExecutionPolicy Bypass -File deploy\windows\build-installer.ps1
 
 注意：安装过程需要 `%TEMP%` 至少约 200 MB 空闲（自包含应用载荷先落临时目录），安装目录约需 400 MB。
 
+> **给打包维护者的坑**：`installer.nsi` 里每组 `File /r "app\*.*"` / `zlm\*.*` / `ffmpeg\*.*` **前必须先 `SetOutPath` 到 `$PLUGINSDIR\payload\<同名子目录>`**。NSIS 的 `File /r` 只把目录「内容」平铺进当前 `$OUTDIR`，不会自动创建 `app\`、`zlm\` 这层；而 `install.ps1` 是按 `$PSScriptRoot\app` / `zlm` / `ffmpeg` 找载荷的。少写这行就会出现「未找到 …\payload\app\Apiext.MediaKit.Server.exe」，且三组文件互相覆盖混在一起。
+
 静默安装（无人值守）：
 
 ```powershell
@@ -239,6 +241,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -RemoveData
 | 录像列表为空 | `Recording:SourcePath` 必须等于 `C:\apiext-mediakit\zlm\www\record`（脚本已按此生成） |
 | 日志在哪 | NSSM 模式：`logs\app.out.log`、`logs\app.err.log`、`logs\zlm.*.log`；也可看「事件查看器 → Windows 日志 → 应用程序」（源名 `Apiext-MediaKit`） |
 | 端口被占用 | `netstat -ano | findstr :28180`；卸载脚本会兜底结束残留的 `MediaServer` / `Apiext.MediaKit.Server` 进程 |
+| 安装时报「未找到 …\payload\app\Apiext.MediaKit.Server.exe」 | 安装包构建不完整：载荷被平铺到 `payload` 根目录。请用修复后的 `installer.nsi` 重新执行 `build-installer.ps1` 并重新发布安装包；已下载的安装包请丢弃重下 |
 
 > Windows 版 ZLM 同样**未链接 libavcodec**：`addStreamProxy` 的 `enable_audio` 无效，G.711 转 AAC、视频重编码只能靠 ffmpeg 取流模式（`PullMode=ffmpeg`），2 核机不要承诺 2.5K 实时转码。
 

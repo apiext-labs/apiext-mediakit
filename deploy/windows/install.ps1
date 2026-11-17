@@ -83,6 +83,26 @@ function Write-Step([string]$text) {
 function Write-Ok([string]$text) { Write-Host "    [OK] $text" -ForegroundColor Green }
 function Write-Warn2([string]$text) { Write-Host "    [WARN] $text" -ForegroundColor Yellow }
 
+# ── 原生命令包装（关键）─────────────────────────────────────────
+# Windows PowerShell 5.1 在 $ErrorActionPreference='Stop' 下，会把原生命令写到 stderr 的
+# 「正常输出」升级成 NativeCommandError 并终止整个脚本，即使加 2>$null 也拦不住。
+# 典型：schtasks /Delete 删一个不存在的计划任务 → 「错误: 系统找不到指定的文件。」→ 安装中断。
+# 这里临时降到 Continue、把 stderr 并入输出流后丢弃，只返回退出码。
+function Invoke-Native([string]$exe, [string[]]$argv) {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $exe @argv 2>&1 | Out-Null
+        return $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $prev }
+}
+
+function Invoke-NativeRequired([string]$exe, [string[]]$argv, [string]$desc) {
+    $code = Invoke-Native $exe $argv
+    if ($code -ne 0) { throw "$desc 失败（$exe 退出码 $code）" }
+}
+
 function Assert-Admin {
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -137,7 +157,7 @@ function Stop-AndDeleteService([string]$name) {
             Stop-Service -Name $name -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
         }
-        & sc.exe delete $name | Out-Null
+        Invoke-Native 'sc.exe' @('delete', $name) | Out-Null
         Start-Sleep -Seconds 1
     }
 }
@@ -197,10 +217,10 @@ $nssm = Join-Path $PSScriptRoot "nssm.exe"
 
 $appExeName = "Apiext.MediaKit.Server.exe"
 if (-not (Test-Path (Join-Path $AppSource $appExeName))) {
-    throw "未找到 $AppSource\$appExeName 。请先在仓库根目录执行：powershell -ExecutionPolicy Bypass -File deploy\windows\publish-app.ps1"
+    throw "未找到 $AppSource\$appExeName 。载荷目录里必须有 app\ 子目录：手工部署请先执行 deploy\windows\publish-app.ps1；若来自安装包，说明安装包构建不完整，请重新执行 deploy\windows\build-installer.ps1 后重新发布。"
 }
 if (-not (Test-Path (Join-Path $zlmSource "MediaServer.exe"))) {
-    throw "未找到 $zlmSource\MediaServer.exe 。请把 ZLMediaKit 的 Windows 版（MediaServer.exe 及其依赖 dll/pem）放到 deploy\windows\zlm 下再安装。"
+    throw "未找到 $zlmSource\MediaServer.exe 。载荷目录里必须有 zlm\ 子目录：手工部署请把 ZLMediaKit Windows 版放到 deploy\windows\zlm；若来自安装包，请重新执行 deploy\windows\build-installer.ps1 后重新发布。"
 }
 
 $hasFfmpeg = Test-Path (Join-Path $ffmpegSource "ffmpeg.exe")
@@ -447,7 +467,9 @@ if (-not $SkipServices) {
 
     Stop-AndDeleteService $AppServiceName
     Stop-AndDeleteService $ZlmServiceName
-    & schtasks /Delete /TN $ZlmTaskName /F 2>$null | Out-Null
+    # 任务不存在时 schtasks /Delete 会往 stderr 写「错误: 系统找不到指定的文件。」，
+    # 必须走 Invoke-Native（内部降 EAP 并把 stderr 并入输出丢弃），否则 $ErrorActionPreference='Stop' 下会中断安装
+    Invoke-Native 'schtasks.exe' @('/Delete', '/TN', $ZlmTaskName, '/F') | Out-Null
 
     if ($hasNssm) {
         & $nssm install $AppServiceName (Join-Path $appDir $appExeName) | Out-Null
@@ -478,13 +500,15 @@ if (-not $SkipServices) {
     }
     else {
         $binPath = "`"$(Join-Path $appDir $appExeName)`""
-        & sc.exe create $AppServiceName binPath= $binPath start= auto DisplayName= "Apiext MediaKit 管理平台" | Out-Null
-        & sc.exe description $AppServiceName "Apiext MediaKit 管理平台（Blazor + Web API）" | Out-Null
-        & sc.exe failure $AppServiceName reset= 86400 actions= restart/5000/restart/10000/norestart/0 | Out-Null
+        Invoke-NativeRequired 'sc.exe' @('create', $AppServiceName, 'binPath=', $binPath, 'start=', 'auto', 'DisplayName=', 'Apiext MediaKit 管理平台') '注册应用服务'
+        Invoke-NativeRequired 'sc.exe' @('description', $AppServiceName, 'Apiext MediaKit 管理平台（Blazor + Web API）') '写入服务描述'
+        Invoke-NativeRequired 'sc.exe' @('failure', $AppServiceName, 'reset=', '86400', 'actions=', 'restart/5000/restart/10000/norestart/0') '配置服务失败重启策略'
         Write-Ok "应用服务已注册（sc.exe）：$AppServiceName"
 
-        & schtasks /Create /TN $ZlmTaskName /SC ONSTART /RU "SYSTEM" /RL HIGHEST `
-            /TR "`"$(Join-Path $zlmDir 'run-zlm.cmd')`"" /F | Out-Null
+        # /TR 传裸路径：PowerShell 会自动给含空格的参数加引号（手工套引号在 5.1 下容易被再转义）
+        Invoke-NativeRequired 'schtasks.exe' `
+            @('/Create', '/TN', $ZlmTaskName, '/SC', 'ONSTART', '/RU', 'SYSTEM', '/RL', 'HIGHEST',
+              '/TR', (Join-Path $zlmDir 'run-zlm.cmd'), '/F') '注册 ZLM 开机计划任务'
         Write-Ok "ZLM 已注册为开机计划任务：$ZlmTaskName（MediaServer.exe 不支持 SCM，故用计划任务）"
     }
 
@@ -494,7 +518,7 @@ if (-not $SkipServices) {
         Start-Service -Name $AppServiceName
     }
     else {
-        & schtasks /Run /TN $ZlmTaskName | Out-Null
+        Invoke-NativeRequired 'schtasks.exe' @('/Run', '/TN', $ZlmTaskName) '启动 ZLM 计划任务'
         Start-Service -Name $AppServiceName
     }
     Write-Ok "服务已启动"

@@ -32,6 +32,21 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     throw "请用「管理员身份」运行 PowerShell 后再执行本脚本。"
 }
 
+# ── 原生命令包装（关键）─────────────────────────────────────────
+# Windows PowerShell 5.1 在 $ErrorActionPreference='Stop' 下，会把原生命令写到 stderr 的
+# 「正常输出」升级成 NativeCommandError 并终止整个脚本，即使加 2>$null 也拦不住。
+# 典型：schtasks /Query 查一个不存在的计划任务 → 「错误: 系统找不到指定的文件。」→ 卸载中断。
+# 这里临时降到 Continue、把 stderr 并入输出流后丢弃，只返回退出码。
+function Invoke-Native([string]$exe, [string[]]$argv) {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $exe @argv 2>&1 | Out-Null
+        return $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $prev }
+}
+
 Write-Host "==> 停止并删除服务" -ForegroundColor Cyan
 
 foreach ($name in @($AppServiceName, $ZlmServiceName)) {
@@ -41,7 +56,7 @@ foreach ($name in @($AppServiceName, $ZlmServiceName)) {
             Stop-Service -Name $name -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
         }
-        & sc.exe delete $name | Out-Null
+        Invoke-Native 'sc.exe' @('delete', $name) | Out-Null
         Write-Host "    已删除服务 $name"
     }
     else {
@@ -50,11 +65,14 @@ foreach ($name in @($AppServiceName, $ZlmServiceName)) {
 }
 
 # NSSM 注册的 ZLM 也被上面包含（服务名相同）；若用计划任务则这里清理
-$task = & schtasks /Query /TN $ZlmTaskName 2>$null
-if ($LASTEXITCODE -eq 0) {
-    & schtasks /End /TN $ZlmTaskName 2>$null | Out-Null
-    & schtasks /Delete /TN $ZlmTaskName /F 2>$null | Out-Null
+$taskExists = (Invoke-Native 'schtasks.exe' @('/Query', '/TN', $ZlmTaskName)) -eq 0
+if ($taskExists) {
+    Invoke-Native 'schtasks.exe' @('/End', '/TN', $ZlmTaskName) | Out-Null
+    Invoke-Native 'schtasks.exe' @('/Delete', '/TN', $ZlmTaskName, '/F') | Out-Null
     Write-Host "    已删除计划任务 $ZlmTaskName"
+}
+else {
+    Write-Host "    计划任务 $ZlmTaskName 不存在，跳过"
 }
 
 # 兜底：强制结束残留进程（服务删除后进程偶发残留，会占用端口）
